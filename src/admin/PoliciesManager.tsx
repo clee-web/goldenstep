@@ -178,20 +178,28 @@ export function PoliciesManager({
             </Field>
           </div>
 
+          {/* An output of the upload, not an input. Kept for a PDF already in /assets. */}
           <div className="md:col-span-2">
-            <Field
-              label="Document path"
-              htmlFor="policy-file-path"
-              error={editor.fieldErrors.file}
-              hint="Filled in by the upload above. Must end in .pdf."
-            >
-              <TextInput
-                id="policy-file-path"
-                value={editor.draft.file}
-                invalid={Boolean(editor.fieldErrors.file)}
-                onChange={(value) => editor.setDraft((draft) => ({ ...draft, file: value }))}
-              />
-            </Field>
+            <details className="text-sm">
+              <summary className="cursor-pointer text-[13px] font-extrabold text-brand-900">
+                Use an existing path instead
+              </summary>
+              <div className="mt-3">
+                <Field
+                  label="Document path"
+                  htmlFor="policy-file-path"
+                  error={editor.fieldErrors.file}
+                  hint="Filled in by the upload above. Must end in .pdf."
+                >
+                  <TextInput
+                    id="policy-file-path"
+                    value={editor.draft.file}
+                    invalid={Boolean(editor.fieldErrors.file)}
+                    onChange={(value) => editor.setDraft((draft) => ({ ...draft, file: value }))}
+                  />
+                </Field>
+              </div>
+            </details>
           </div>
 
           <div className="md:col-span-2">

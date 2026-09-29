@@ -47,8 +47,13 @@ export function ImageField({
   /** The stored path. Empty means no image is set. */
   value: string;
   onChange: (path: string) => void;
-  altValue: string;
-  onAltChange: (value: string) => void;
+  /**
+   * Omitted for a decorative image that is not described on its own — the video
+   * poster, which is covered by the video's own alt text. Every other caller
+   * passes both, because the server refuses an image with no description.
+   */
+  altValue?: string;
+  onAltChange?: (value: string) => void;
   /** Validation error for the path, from the save response. */
   error?: string;
   /** Validation error for the alt text, from the save response. */
@@ -109,7 +114,7 @@ export function ImageField({
    */
   const clear = () => {
     onChange('');
-    onAltChange('');
+    onAltChange?.('');
     setUploadError(null);
   };
 
@@ -138,9 +143,11 @@ export function ImageField({
         <div className="flex flex-wrap items-start gap-4">
           <img
             src={value}
-            /* The description below describes this image, so the preview is the
-               thing being described rather than separate content. */
-            alt={altValue}
+            /* When a description is being collected, it describes this very
+               image, so the preview is not separate content. Without one the
+               alt is empty and the preview is marked decorative instead. */
+            alt={altValue ?? ''}
+            aria-hidden={altValue ? undefined : true}
             className="h-28 w-40 rounded-[10px] border border-line bg-white object-cover"
           />
           <div className="min-w-[12rem] flex-1 space-y-3">
@@ -162,20 +169,22 @@ export function ImageField({
         </p>
       )}
 
-      <Field
-        label="Image description"
-        htmlFor={`${id}-alt`}
-        error={altError}
-        hint="Required whenever an image is set. Describe what is in the picture for someone who cannot see it."
-      >
-        <TextInput
-          id={`${id}-alt`}
-          value={altValue}
-          invalid={Boolean(altError)}
-          disabled={uploading}
-          onChange={onAltChange}
-        />
-      </Field>
+      {onAltChange ? (
+        <Field
+          label="Image description"
+          htmlFor={`${id}-alt`}
+          error={altError}
+          hint="Required whenever an image is set. Describe what is in the picture for someone who cannot see it."
+        >
+          <TextInput
+            id={`${id}-alt`}
+            value={altValue ?? ''}
+            invalid={Boolean(altError)}
+            disabled={uploading}
+            onChange={onAltChange}
+          />
+        </Field>
+      ) : null}
 
       {/*
         Escape hatch, not part of the normal flow. `<details>` rather than a

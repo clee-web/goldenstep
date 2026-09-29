@@ -122,6 +122,22 @@ const optionalIsoDateSchema = z
  * gallery picture, so an arbitrary URL cannot be smuggled in through a field
  * that only checked the length.
  */
+/**
+ * Extensions that a browser can actually paint in an `<img>`.
+ *
+ * Checked separately from the path prefix because the two rules catch different
+ * mistakes. The prefix rule is a security boundary — it is what stops a
+ * `javascript:` URL reaching an `img src`. This one is a correctness boundary:
+ * `/uploads/report.pdf` passes the prefix test perfectly well, and would then be
+ * rendered as an image tag and show the reader a broken-image icon with no
+ * error anywhere to explain it.
+ *
+ * Applied only to the optional (image-only) schema. `imageSrcSchema` is used by
+ * the gallery, which legitimately stores video, so it does not restrict the
+ * extension.
+ */
+const imageExtensionPattern = /\.(jpe?g|png|webp|avif|gif|bmp|ico)$/i;
+
 const optionalImageSrcSchema = z
   .string()
   .trim()
@@ -132,6 +148,17 @@ const optionalImageSrcSchema = z
       /^\/(uploads|assets)\//.test(value) ||
       /^https:\/\/[^\s]+$/.test(value),
     'Image must be an uploaded file, a path under /assets, or an https URL.',
+  )
+  .refine(
+    (value) =>
+      value === '' ||
+      // An https URL is left alone: the extension is frequently absent there
+      // (a CDN path, a query string, an extensionless image endpoint) and
+      // rejecting it would break valid links. The prefix rule above is what
+      // protects those.
+      /^https:\/\//.test(value) ||
+      imageExtensionPattern.test(value.split(/[?#]/)[0]),
+    'Image must end in .jpg, .jpeg, .png, .webp, .avif, .gif, .bmp or .ico.',
   );
 
 const titleField = (label: string) =>

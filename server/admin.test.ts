@@ -204,6 +204,71 @@ describe('managed content CRUD', () => {
     assert.ok(body.fields?.image);
   });
 
+  /*
+   * A path under /uploads passes the scheme check perfectly well, so the
+   * extension is what catches a document pointed at an image field. Without it
+   * the record saves cleanly and the public site renders a broken image with no
+   * error to explain why.
+   */
+  it('rejects a non-image file in a project image field', async () => {
+    const res = await send('/api/admin/projects', 'POST', {
+      title: 'A project pointing at a PDF',
+      summary: 'The image field holds a document, which cannot be painted.',
+      programme: 'gender',
+      status: 'Planned',
+      date: '2026-02-01',
+      image: '/uploads/safeguarding-policy.pdf',
+      imageAlt: 'A policy document',
+    });
+    assert.equal(res.status, 422);
+    const body = await json<ErrorBody>(res);
+    assert.ok(body.fields?.image);
+  });
+
+  it('accepts the image formats the dashboard picker offers', async () => {
+    // Each of these is offered by the file picker's `accept` list, so the
+    // server must not reject one the client invites.
+    for (const image of [
+      '/uploads/photo.jpg',
+      '/uploads/photo.jpeg',
+      '/uploads/photo.png',
+      '/uploads/photo.webp',
+      '/uploads/photo.avif',
+      '/uploads/photo.gif',
+      '/assets/logo.jpeg',
+    ]) {
+      const res = await send('/api/admin/projects', 'POST', {
+        title: `Format check ${image}`,
+        summary: 'Confirms the format is accepted by the server.',
+        programme: 'gender',
+        status: 'Planned',
+        date: '2026-02-01',
+        image,
+        imageAlt: 'Something descriptive',
+      });
+      assert.equal(res.status, 201, `${image} should be accepted`);
+      const body = await json<{ project: { id: string } }>(res);
+      await send(`/api/admin/projects/${body.project.id}`, 'DELETE');
+    }
+  });
+
+  it('accepts an extensionless https image URL', async () => {
+    // CDN image endpoints routinely have no file extension, and rejecting them
+    // would break links that genuinely work.
+    const res = await send('/api/admin/projects', 'POST', {
+      title: 'A project with a CDN photograph',
+      summary: 'The image is hosted elsewhere and has no file extension.',
+      programme: 'gender',
+      status: 'Planned',
+      date: '2026-02-01',
+      image: 'https://images.example.org/photo/1234',
+      imageAlt: 'Something descriptive',
+    });
+    assert.equal(res.status, 201);
+    const body = await json<{ project: { id: string } }>(res);
+    await send(`/api/admin/projects/${body.project.id}`, 'DELETE');
+  });
+
   it('creates, reads, updates and deletes a project', async () => {
     const created = await send('/api/admin/projects', 'POST', {
       title: 'Kisumu East women\'s cooperative',

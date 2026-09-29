@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 
 import type { ManagedContent, PictureInput } from '@shared/schemas';
 import * as api from '@/lib/adminApi';
+import { ImageField } from './ImageField';
 import { useAction, useEditor } from './useEditor';
 import {
   Button,
@@ -170,20 +171,34 @@ export function PicturesManager({
             </Field>
           </div>
 
+          {/*
+            The path is an output of the upload, not something the operator types.
+            It stays available for a file already in /assets or hosted elsewhere,
+            but behind a disclosure so it does not read as the way to add a photo.
+          */}
           <div className="md:col-span-2">
-            <Field
-              label="Media path"
-              htmlFor="picture-src"
-              error={editor.fieldErrors.src}
-              hint="Filled in automatically by the upload. An /uploads path, /assets path or https URL."
-            >
-              <TextInput
-                id="picture-src"
-                value={editor.draft.src}
-                invalid={Boolean(editor.fieldErrors.src)}
-                onChange={(value) => editor.setDraft((draft) => ({ ...draft, src: value }))}
-              />
-            </Field>
+            <details className="text-sm">
+              <summary className="cursor-pointer text-[13px] font-extrabold text-brand-900">
+                Use an existing path instead
+              </summary>
+              <div className="mt-3">
+                <Field
+                  label="Media path"
+                  htmlFor="picture-src"
+                  error={editor.fieldErrors.src}
+                  hint="Filled in automatically by the upload. An /uploads path, /assets path or https URL."
+                >
+                  <TextInput
+                    id="picture-src"
+                    value={editor.draft.src}
+                    invalid={Boolean(editor.fieldErrors.src)}
+                    onChange={(value) =>
+                      editor.setDraft((draft) => ({ ...draft, src: value }))
+                    }
+                  />
+                </Field>
+              </div>
+            </details>
           </div>
 
           {editor.draft.src ? (
@@ -228,40 +243,48 @@ export function PicturesManager({
                 </Field>
               </div>
 
+              {/* Same treatment as the media path: shown for confirmation, not as the way to add one. */}
               <div className="md:col-span-2">
-                <Field
-                  label="Captions path"
-                  htmlFor="picture-captions-src"
-                  error={editor.fieldErrors.captionsSrc}
-                  hint="Filled in by the upload above. Must end in .vtt."
-                >
-                  <TextInput
-                    id="picture-captions-src"
-                    value={editor.draft.captionsSrc}
-                    invalid={Boolean(editor.fieldErrors.captionsSrc)}
-                    onChange={(value) =>
-                      editor.setDraft((draft) => ({ ...draft, captionsSrc: value }))
-                    }
-                  />
-                </Field>
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-[13px] font-extrabold text-brand-900">
+                    Show the uploaded captions path
+                  </summary>
+                  <div className="mt-3">
+                    <Field
+                      label="Captions path"
+                      htmlFor="picture-captions-src"
+                      error={editor.fieldErrors.captionsSrc}
+                      hint="Filled in by the upload above. Must end in .vtt."
+                    >
+                      <TextInput
+                        id="picture-captions-src"
+                        value={editor.draft.captionsSrc}
+                        invalid={Boolean(editor.fieldErrors.captionsSrc)}
+                        onChange={(value) =>
+                          editor.setDraft((draft) => ({ ...draft, captionsSrc: value }))
+                        }
+                      />
+                    </Field>
+                  </div>
+                </details>
               </div>
 
+              {/*
+                A picker rather than a path box, same as everywhere else. The
+                poster used to say "upload a photograph above, then paste its
+                path here", which is exactly the two-step the upload field
+                removes.
+              */}
               <div className="md:col-span-2">
-                <Field
+                <ImageField
+                  id="picture-poster"
                   label="Poster image"
-                  htmlFor="picture-poster"
+                  value={editor.draft.poster}
+                  onChange={(value) =>
+                    editor.setDraft((draft) => ({ ...draft, poster: value }))
+                  }
                   error={editor.fieldErrors.poster}
-                  hint="The still shown before the video plays. Without one the player opens on a black rectangle. Upload a photograph above, then paste its path here."
-                >
-                  <TextInput
-                    id="picture-poster"
-                    value={editor.draft.poster}
-                    invalid={Boolean(editor.fieldErrors.poster)}
-                    onChange={(value) =>
-                      editor.setDraft((draft) => ({ ...draft, poster: value }))
-                    }
-                  />
-                </Field>
+                />
               </div>
             </>
           ) : null}
