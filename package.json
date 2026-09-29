@@ -15,6 +15,8 @@
     "preview": "vite preview",
     "start": "node --env-file-if-exists=.env server/index.ts",
     "migrate:sqlite": "node --env-file-if-exists=.env server/migrate-json-to-sqlite.ts",
+    "backup": "node --env-file-if-exists=.env server/backup.ts",
+    "restore": "node --env-file-if-exists=.env server/backup.ts --restore",
     "typecheck": "tsc -b",
     "lint": "eslint . --max-warnings 0",
     "test": "node --test server/*.test.ts"

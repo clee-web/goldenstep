@@ -14,6 +14,19 @@ data
 # the committed template.
 .env.*
 !.env.example
+
+# Backup bundles from `npm run backup`. These are copies of the live database and
+# every uploaded document — committing one would publish unpublished content and
+# the policy PDFs, and would replace the real content on a fresh clone.
+backups
+
+# SQLite files, in case DATA_DIR is ever pointed somewhere inside the repo. The
+# -wal and -shm siblings are listed too: a bare website.db is a partial backup,
+# because recent commits still live in the -wal file.
+*.db
+*.db-wal
+*.db-shm
+
 *.log
 npm-debug.log*
 .DS_Store

@@ -11,6 +11,7 @@ import { admin } from './admin-routes.ts';
 import { authConfigured } from './auth.ts';
 import { api, enquiryLimiter } from './routes.ts';
 import { UPLOADS_DIR } from './paths.ts';
+import { contentCounts, describeContent, inspectStorage } from './persistence.ts';
 import { closeDb } from './sqlite.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -143,6 +144,59 @@ const isDirectRun =
   process.argv[1] !== undefined &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
+/**
+ * Warns, loudly, when the data directory is not persistent.
+ *
+ * This is the single most expensive mistake available in this deployment, and
+ * it is invisible without being called out: the app starts, serves a working
+ * site, and shows an empty dashboard. The operator reasonably concludes the
+ * dashboard is broken rather than that the storage is disposable, adds content,
+ * and loses it on the next deploy. Saying so once at startup turns a mystery
+ * into a log line.
+ *
+ * Deliberately not fatal. An ephemeral data directory is a legitimate choice for
+ * a preview build, and refusing to boot would be a worse failure than the one
+ * being prevented.
+ */
+function reportStorage(): void {
+  const storage = inspectStorage();
+  if (storage.durability !== 'ephemeral') {
+    console.log(`[golden-steps] storage: ${storage.detail}`);
+    return;
+  }
+
+  const counts = contentCounts();
+  const atRisk = Object.values(counts).reduce((sum, n) => sum + n, 0);
+
+  console.warn(
+    [
+      '',
+      '='.repeat(72),
+      '  DATA IS NOT PERSISTENT — EVERY REDEPLOY WILL DISCARD IT',
+      '='.repeat(72),
+      `  ${storage.detail}`,
+      '',
+      `  Currently holding: ${describeContent(counts)}`,
+      '',
+      '  Attach a persistent volume at /data, then set its owner to UID 1000:',
+      '    docker compose up --build          (uses the app-data volume)',
+      '    docker run -v golden-data:/data …  (named volume)',
+      '',
+      '  On a PaaS, add a disk or volume in the platform dashboard. That',
+      '  setting lives in the platform, not in this repository, so it is',
+      '  easy to miss and looks correct until a deploy replaces the container.',
+      '='.repeat(72),
+      '',
+    ].join('\n'),
+  );
+
+  if (atRisk > 0) {
+    console.warn(
+      `[golden-steps] WARNING: ${atRisk} records are stored on ephemeral storage right now.`,
+    );
+  }
+}
+
 if (isDirectRun) {
   const server = createApp().listen(PORT, HOST, () => {
     console.log(`[golden-steps] API listening on http://localhost:${PORT}`);
@@ -158,6 +212,7 @@ if (isDirectRun) {
     } else {
       console.log('[golden-steps] no build found — run the Vite dev server for the site');
     }
+    reportStorage();
   });
 
   /*

@@ -5,6 +5,7 @@ import { programmes, totalBeneficiaries, organisation } from '../shared/content.
 import { enquirySchema } from '../shared/schemas.ts';
 import type { ApiError, ContentResponse, EnquiryResponse } from '../shared/schemas.ts';
 import { readManagedContent, sortByDateDesc } from './content-store.ts';
+import { inspectStorage } from './persistence.ts';
 import { countEnquiries, listEnquiries, saveEnquiry } from './store.ts';
 import { sendEnquiryEmail } from './email.ts';
 
@@ -23,8 +24,29 @@ export const enquiryLimiter = rateLimit({
   } satisfies ApiError,
 });
 
+/**
+ * Liveness, plus whether the data directory is actually persistent.
+ *
+ * The `storage` block is what turns "I lost my data again" from a recurring
+ * mystery into something a deploy script can assert on. It deliberately does not
+ * change the status code: a non-durable volume is a configuration problem, and
+ * returning 503 would make Docker's HEALTHCHECK fail, so the platform would kill
+ * an otherwise perfectly healthy container and restart it in a loop.
+ *
+ * Check it with:
+ *   curl -s localhost:4000/api/health | grep -q '"durability":"durable"'
+ */
 api.get('/health', (_req, res) => {
-  res.json({ ok: true, uptime: process.uptime() });
+  const storage = inspectStorage();
+  res.json({
+    ok: true,
+    uptime: process.uptime(),
+    storage: {
+      durability: storage.durability,
+      dataDir: storage.dataDir,
+      detail: storage.detail,
+    },
+  });
 });
 
 api.get('/programmes', (_req, res) => {
