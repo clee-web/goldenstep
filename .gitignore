@@ -5,6 +5,15 @@ data
 .env
 .env.local
 .env.*.local
+
+# Backup copies of the real environment. `.env` itself is ignored, but a copy
+# made with any other suffix — .env.bak, .env.old, .env.production — is not
+# covered by the rules above and would be picked up by `git add .`, leaking
+# ADMIN_PASSWORD and the session secret into the repository history. Real
+# environment files should never be committed in any form; `.env.example` is
+# the committed template.
+.env.*
+!.env.example
 *.log
 npm-debug.log*
 .DS_Store

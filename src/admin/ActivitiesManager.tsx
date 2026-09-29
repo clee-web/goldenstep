@@ -1,9 +1,12 @@
+import { useState } from 'react';
+
 import {
   type ActivityInput,
   type ManagedActivity,
   type ManagedContent,
 } from '@shared/schemas';
 import * as api from '@/lib/adminApi';
+import { ImageField } from './ImageField';
 import { useAction, useEditor } from './useEditor';
 import {
   Button,
@@ -56,6 +59,8 @@ export function ActivitiesManager({
   });
 
   const removal = useAction();
+  /** Lets the submit button be disabled while a file is uploading. */
+  const [uploading, setUploading] = useState(false);
 
   const save = async (draft: ActivityInput, id: string | null) =>
     id ? api.updateActivity(id, draft) : api.createActivity(draft);
@@ -156,40 +161,24 @@ export function ActivitiesManager({
             />
           </Field>
 
-          <Field
-            label="Image path"
-            htmlFor="activity-image"
+          <ImageField
+            id="activity-image"
+            label="Photograph"
+            value={editor.draft.image}
+            onChange={(value) =>
+              editor.setDraft((draft) => ({ ...draft, image: value }))
+            }
+            altValue={editor.draft.imageAlt}
+            onAltChange={(value) =>
+              editor.setDraft((draft) => ({ ...draft, imageAlt: value }))
+            }
             error={editor.fieldErrors.image}
-            hint="Optional. An /uploads path, /assets path or https URL."
-          >
-            <TextInput
-              id="activity-image"
-              value={editor.draft.image}
-              invalid={Boolean(editor.fieldErrors.image)}
-              onChange={(value) =>
-                editor.setDraft((draft) => ({ ...draft, image: value }))
-              }
-            />
-          </Field>
-
-          <Field
-            label="Image description"
-            htmlFor="activity-image-alt"
-            error={editor.fieldErrors.imageAlt}
-            hint="Required when an image is set."
-          >
-            <TextInput
-              id="activity-image-alt"
-              value={editor.draft.imageAlt}
-              invalid={Boolean(editor.fieldErrors.imageAlt)}
-              onChange={(value) =>
-                editor.setDraft((draft) => ({ ...draft, imageAlt: value }))
-              }
-            />
-          </Field>
+            altError={editor.fieldErrors.imageAlt}
+            onBusyChange={setUploading}
+          />
 
           <div className="flex flex-wrap items-center gap-3 md:col-span-2">
-            <Button type="submit" disabled={editor.busy}>
+            <Button type="submit" disabled={editor.busy || uploading}>
               {editor.busy ? 'Saving…' : editor.mode === 'edit' ? 'Save changes' : 'Publish update'}
             </Button>
             {editor.mode === 'edit' ? (

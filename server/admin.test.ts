@@ -76,6 +76,11 @@ after(async () => {
   await new Promise<void>((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
   );
+  // The database handle has to be released before the directory goes. On
+  // Windows an open file cannot be unlinked, so without this the cleanup throws
+  // EBUSY and leaves the temp directory behind.
+  const { closeDb } = await import('./sqlite.ts');
+  closeDb();
   await rm(dataDir, { recursive: true, force: true });
 });
 

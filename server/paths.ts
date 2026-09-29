@@ -4,7 +4,7 @@ import path from 'node:path';
  * Every runtime-writeable location in one place.
  *
  * `DATA_DIR` deliberately defaults to `./data`, which is git-ignored. Nothing
- * the dashboard writes may live inside `public/` or `dist/`: `dist` is a build
+ * the dashboard writes may live inside `public/` or `dist`: `dist` is a build
  * artefact that gets replaced on every deploy, and `public/` is only copied at
  * build time, so files added there after a build would 404 in production.
  */
@@ -22,7 +22,9 @@ export const CONTENT_FILE = path.join(DATA_DIR, 'content.json');
  */
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 
-export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 8 * 1024 * 1024);
+export const MAX_UPLOAD_BYTES = Number(
+  process.env.MAX_UPLOAD_BYTES ?? 8 * 1024 * 1024,
+);
 
 /**
  * Videos get their own ceiling rather than raising the image limit for everyone.

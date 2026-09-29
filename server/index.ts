@@ -2,7 +2,6 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { Router } from 'express';
 import compression from 'compression';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
@@ -12,6 +11,7 @@ import { admin } from './admin-routes.ts';
 import { authConfigured } from './auth.ts';
 import { api, enquiryLimiter } from './routes.ts';
 import { UPLOADS_DIR } from './paths.ts';
+import { closeDb } from './sqlite.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
 const PORT = Number(process.env.PORT ?? 4000);
@@ -40,11 +40,26 @@ export function createApp({ enforceRateLimit = RATE_LIMIT_ENFORCED } = {}) {
     next();
   });
 
-  // Rate limiting is skipped in dev by default so local iteration is frictionless.
-  const apiRouter = Router();
-  if (enforceRateLimit) apiRouter.use(enquiryLimiter);
-  apiRouter.use(api);
-  app.use('/api', apiRouter);
+  /*
+   * The enquiry limiter is attached to the enquiry route itself, not to the
+   * `/api` prefix.
+   *
+   * Mounting it on the prefix would put every request in the app behind it —
+   * including `/api/admin/*`, which the dashboard polls and writes through
+   * constantly. One operator reloading the dashboard would exhaust the
+   * enquiry budget and get "Too many enquiries" from the content endpoints,
+   * which is both wrong and very hard to diagnose from the symptom. The
+   * limiter exists to slow down form spam, so that is the only thing it
+   * should ever cover.
+   *
+   * It is registered on `app` *before* the `/api` router, not on the router
+   * itself. Adding a handler to `api` here would append it after the route
+   * `routes.ts` already registered, and Express stops at the first handler
+   * that responds — so the limiter would never run at all.
+   */
+  if (enforceRateLimit) app.post('/api/enquiries', enquiryLimiter);
+
+  app.use('/api', api);
 
   // Admin API. Mounted before the static handlers so it can never be shadowed
   // by the SPA catch-all, and never served from `dist`.
@@ -129,7 +144,7 @@ const isDirectRun =
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isDirectRun) {
-  createApp().listen(PORT, HOST, () => {
+  const server = createApp().listen(PORT, HOST, () => {
     console.log(`[golden-steps] API listening on http://localhost:${PORT}`);
     if (authConfigured) {
       console.log('[golden-steps] admin dashboard enabled at /admin');
@@ -144,4 +159,30 @@ if (isDirectRun) {
       console.log('[golden-steps] no build found — run the Vite dev server for the site');
     }
   });
+
+  /*
+   * Close the database on shutdown so SQLite checkpoints the WAL and releases
+   * the file lock.
+   *
+   * A container platform stops the process with SIGTERM, not SIGKILL, and an
+   * abrupt exit leaves a `-wal` file next to the database. That is recoverable
+   * — SQLite replays it on the next open — but it means the database and its
+   * writes live in two files, so a snapshot taken mid-deploy can capture one
+   * without the other. Draining the listener first also stops a deploy from
+   * cutting off a request that is halfway through a write.
+   */
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      server.close(() => {
+        closeDb();
+        process.exit(0);
+      });
+      // Do not let a hung connection keep the process alive past the grace
+      // period a platform gives before it escalates to SIGKILL.
+      setTimeout(() => {
+        closeDb();
+        process.exit(1);
+      }, 10_000).unref();
+    });
+  }
 }

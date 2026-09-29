@@ -9,6 +9,7 @@ import {
 } from '@shared/schemas';
 import { mergeProgrammes } from '@/lib/content';
 import * as api from '@/lib/adminApi';
+import { ImageField } from './ImageField';
 import { useAction } from './useEditor';
 import {
   Button,
@@ -67,6 +68,8 @@ export function ProgrammesManager({
   const [error, setError] = useState<string | null>(null);
 
   const action = useAction();
+  /** Lets the submit button be disabled while a file is uploading. */
+  const [uploading, setUploading] = useState(false);
 
   const select = (id: ProgrammeId) => {
     setSelected(id);
@@ -244,33 +247,17 @@ export function ProgrammesManager({
             </Field>
           </div>
 
-          <Field
-            label="Image path"
-            htmlFor="programme-image"
+          <ImageField
+            id="programme-image"
+            label="Photograph"
+            value={draft.image}
+            onChange={(value) => set('image', value)}
+            altValue={draft.imageAlt}
+            onAltChange={(value) => set('imageAlt', value)}
             error={fieldErrors.image}
-            hint="An /uploads path, /assets path or https URL."
-          >
-            <TextInput
-              id="programme-image"
-              value={draft.image}
-              invalid={Boolean(fieldErrors.image)}
-              onChange={(value) => set('image', value)}
-            />
-          </Field>
-
-          <Field
-            label="Image description"
-            htmlFor="programme-image-alt"
-            error={fieldErrors.imageAlt}
-            hint="Required whenever the image is changed."
-          >
-            <TextInput
-              id="programme-image-alt"
-              value={draft.imageAlt}
-              invalid={Boolean(fieldErrors.imageAlt)}
-              onChange={(value) => set('imageAlt', value)}
-            />
-          </Field>
+            altError={fieldErrors.imageAlt}
+            onBusyChange={setUploading}
+          />
 
           <div className="md:col-span-2">
             <Field label="Caption" htmlFor="programme-caption" error={fieldErrors.caption}>
@@ -284,7 +271,7 @@ export function ProgrammesManager({
           </div>
 
           <div className="md:col-span-2 flex flex-wrap items-center gap-3">
-            <Button type="submit" disabled={action.busy}>
+            <Button type="submit" disabled={action.busy || uploading}>
               {action.busy ? 'Saving…' : 'Save programme'}
             </Button>
             {overridden.length > 0 ? (

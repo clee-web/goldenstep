@@ -280,20 +280,52 @@ stolen password the same secret, so set a separate value before deploying.
 
 | What | Where | Notes |
 | --- | --- | --- |
-| Pictures, projects, updates, overrides | `data/content.json` | Sparse overrides only |
+| Pictures, projects, activities, team, testimonials, policies, programme and impact overrides, enquiries | `data/website.db` | SQLite |
 | Uploaded images | `data/uploads/` | Generated filenames |
-| Enquiries | `data/enquiries.json` | |
+| Schema | `db/schema.sql` | Applied at startup, committed to the repo |
 
 Nothing the dashboard writes lives in `public/` or `dist/`. `dist` is replaced on
 every deploy and `public/` is only copied at build time, so files added there
 after a build would 404 in production. **Point `DATA_DIR` at a persistent volume
-in production**, or a redeploy discards everything the dashboard has published.
+in production**, or a redeploy discards everything the dashboard has published —
+`data/website.db` and `data/uploads/` both live there, so one mount covers the
+database and the media.
+
+`db/schema.sql` is the single source of truth for the schema; `server/sqlite.ts`
+reads and applies it on first connection, so the schema is never duplicated in
+code. To inspect the data:
+
+```bash
+sqlite3 data/website.db          # or: npx sqlite3 data/website.db
+```
+
+Overrides are stored sparsely, exactly as they were in the JSON file: a row in
+`programmes` exists only where the operator has changed something, and a `NULL`
+column means "not overridden", so a one-field edit never blanks the static
+defaults in `shared/content.ts`.
 
 Uploads are validated by MIME type and capped at `MAX_UPLOAD_BYTES` (default 8
 MiB). SVG is rejected: it is a scriptable document, so serving one from the site's
 own origin would be a stored-XSS vector. Filenames are generated, never taken from
 the client, and `imageAlt` is required whenever an image is set — an undescribed
 photo is invisible to screen readers.
+
+### Migrating from the JSON store
+
+Content used to live in `data/content.json` and `data/enquiries.json`. Those files
+are no longer read. To import an existing installation:
+
+```bash
+npm run migrate:sqlite
+```
+
+The script keeps the original record ids and timestamps, so published links and
+sort order are unchanged, and it validates every record against the same schemas
+the API uses — a record that no longer parses is reported and skipped rather than
+aborting the run. It refuses to run against a database that already has content
+unless you pass `--force`, so a second run cannot silently duplicate your gallery.
+
+Keep the JSON files as a backup after importing.
 
 ### Endpoints
 
@@ -313,21 +345,26 @@ photo is invisible to screen readers.
 
 ## Where does storage live?
 
-`server/json-file.ts` is the single persistence primitive: it appends via
-write-then-rename, so a file is never left half-written, and serialises concurrent
-writes through a promise queue so two simultaneous requests cannot drop a record.
-Both `store.ts` (enquiries, capped at `MAX_ENQUIRY_RECORDS`, default 10,000) and
-`content-store.ts` (dashboard content) are built on it.
-
-Managed content is re-validated on every read rather than trusted because the
-file is hand-editable and survives deploys. A record that no longer parses costs
-you that one picture, not the whole dashboard — and it can never smuggle an
-unsafe `src` past the request-time schemas, since the file bypasses them.
-
-That is deliberately the simplest thing that works for a single-instance
-deployment. To move to a real database, reimplement the exported functions in
-`store.ts` and `content-store.ts` against your driver — nothing else in the
+Storage is SQLite, through `server/sqlite.ts`. That module owns the connection
+(opened lazily on first use, in WAL mode, with foreign keys on) and applies
+`db/schema.sql`. Everything above it — `content-store.ts` and `store.ts` — keeps
+exactly the interface it had when it was backed by JSON files, so `admin-routes.ts`
+and `routes.ts` do not know or care which store is behind them. To move to
+PostgreSQL or another driver, reimplement those two modules; nothing else in the
 codebase touches storage.
+
+Transactions replace what the JSON primitive used to guarantee. The old
+`JsonFile` wrote to a temp file and renamed, so a crash could not leave a
+half-written file, and it serialised mutations through a promise queue so two
+concurrent requests could not drop a record. SQLite gives both natively: a
+multi-row write is atomic, and the count-then-insert that enforces a record
+ceiling runs inside the same transaction, so two concurrent saves cannot both slip
+under the limit.
+
+Managed content is still re-validated on every read. Requests are validated
+before they reach SQL, so these checks should never fire — but rows can also
+arrive via the one-time JSON import, and a record that no longer parses should
+cost you that one picture, not the whole dashboard.
 
 To email enquiries, add a transport call in the `POST /enquiries` handler after
 `saveEnquiry` resolves.
@@ -342,7 +379,7 @@ To email enquiries, add a transport call in the `POST /enquiries` handler after
   the upload route.
 - **Image sources are allow-listed** — `/uploads/...`, `/assets/...` or `https:`.
   Without this a stored `javascript:` in an `img src` would reach the validator on
-  the next read, since the JSON file bypasses request-time schemas.
+  the next read, since the import script bypasses request-time schemas.
 - **Zod validation** on every field, shared verbatim with the client so the two
   can never disagree.
 - **Uploaded files are inert** — `nosniff` and a restrictive
@@ -378,25 +415,119 @@ read or ride it.
 
 ## Deployment
 
-Build once, run the API — it serves `dist/` as static files when present:
+The app is a **single Node process**. Express serves the API *and* the built site
+from `dist/`, and hosts `/admin` from the same origin. There is no separate
+frontend to deploy and no rewrite rules to keep in sync — which is why the
+dashboard keeps working in production instead of 404ing the way a purely
+client-side route does on a static host.
+
+### Container (recommended)
+
+Works as-is on Render, Railway, Fly.io, DigitalOcean, Azure Container Apps, AWS
+ECS, or any VPS with Docker.
+
+```bash
+docker compose up --build          # local
+# or, with real secrets in the environment:
+docker build -t golden-steps .
+docker run -p 4000:4000 \
+  -e ADMIN_PASSWORD=... -e ADMIN_SESSION_SECRET=... \
+  -e DATA_DIR=/data -v golden-steps-data:/data \
+  golden-steps
+```
+
+Two things in the image are load-bearing rather than cosmetic:
+
+- **`tini` as PID 1.** Without an init, PID 1 does not receive `SIGTERM`, so the
+  graceful shutdown in `server/index.ts` never runs and SQLite is left with a
+  stale `-wal` file on every deploy. Recoverable, but it means the database and
+  its writes live in two files.
+- **A persistent volume at `/data`.** It holds both `website.db` and
+  `uploads/`. Without one, every redeploy discards the dashboard's content.
+
+`better-sqlite3` is a native module, so the build stage installs `python3`,
+`make` and `g++` and the runtime stage copies the compiled result across. Both
+stages use the same base image and architecture, so the binary matches and does
+not need rebuilding. `db/` ships in the image because the schema is read at
+startup.
+
+### Any host with a Node runtime (no Docker)
 
 ```bash
 npm ci
 npm run build
-NODE_ENV=production PORT=4000 npm start
+NODE_ENV=production npm start
 ```
 
-The dashboard is a separate lazy chunk, so public visitors never download admin
-code. The same process serves `/admin` through the SPA fallback, and the client
-selects the dashboard by pathname.
+Set `NODE_ENV=production` — it enables rate limiting and the `Secure` flag on
+the session cookie. Behind a proxy, set `TRUST_PROXY_HOPS` to the number of hops,
+or rate limiting sees the proxy's IP instead of the client's.
 
-Put nginx/Caddy in front for TLS. Remember `TRUST_PROXY_HOPS=1`.
+> The server runs `server/index.ts` directly via Node's native TypeScript
+> stripping, so there is no compile step for the backend and no `tsx` in
+> production. That needs Node **22.18+** (24 recommended), matching `engines`.
 
-Before going live:
+### Required environment
 
-- Set `ADMIN_PASSWORD` and a separate `ADMIN_SESSION_SECRET`.
-- Point `DATA_DIR` at a persistent volume.
-- Convert the deck PNGs to WebP/AVIF (see the notes below).
+Set these on the platform; do not ship a `.env` file in the image.
+
+| Variable | Why |
+| --- | --- |
+| `ADMIN_PASSWORD` | Enables `/admin`. Empty disables the dashboard entirely. |
+| `ADMIN_SESSION_SECRET` | Signs the session cookie. **Separate from the password** — a stolen cookie should not be the same secret as a stolen password. |
+| `DATA_DIR` | Persistent volume path. Points at a container filesystem without a volume, everything is lost on redeploy. |
+| `NODE_ENV` | `production`. |
+| `TRUST_PROXY_HOPS` | Proxy hop count, when behind nginx/Caddy/a platform proxy. |
+
+### The two HTML entries
+
+The build emits **two** entries:
+
+| Entry | Output | Purpose |
+| --- | --- | --- |
+| `index.html` | `dist/index.html` | The public site |
+| `admin/index.html` | `dist/admin/index.html` | The dashboard |
+
+Public visitors never download admin code. On the Express server `/admin`
+resolves through the SPA fallback, and the client selects the dashboard by
+pathname — the separate entry is a second, equivalent route to the same
+`AdminApp`, not a different one.
+
+The second entry exists for **static hosting**. A client-side `/admin` route
+depends on a server catch-all that rewrites unknown paths to `index.html`;
+static hosts have no such fallback and return 404 for a path with no file
+behind it, while the public site keeps working because `/index.html` does
+exist. Shipping a real `dist/admin/index.html` means `/admin` resolves on
+Vercel, Netlify, Cloudflare Pages and GitHub Pages with no host-specific
+rewrite rules.
+
+> **A static host alone cannot run the dashboard.** It serves the built files
+> but has no API and no writable disk, so sign-in, saving and uploads all fail.
+> The dashboard needs the Node process for `/api/admin/*`, `/uploads` and the
+> database. If you must host the frontend separately, set `VITE_API_BASE_URL` at
+> **build time** to a running API — but note the session cookie is same-origin
+> and `SameSite=Strict`, so a cross-origin API needs matching CORS and cookie
+> attributes, which is far more work than just running one container.
+
+### Before going live
+
+- [ ] `ADMIN_PASSWORD` set to a long, unique passphrase.
+- [ ] `ADMIN_SESSION_SECRET` set, and **different** from the password.
+- [ ] `DATA_DIR` on a persistent volume.
+- [ ] **The volume is writable by UID 1000.** The container runs as `node`, and
+      a mounted volume takes the host's ownership rather than the image's. If it
+      is root-owned, every save and upload fails with a permissions error while
+      reads keep working — which looks like an application bug rather than a
+      mount problem. Bind mounts need `sudo chown -R 1000:1000 /path/to/data`
+      on the host; on a PaaS, set the volume's user to UID 1000.
+- [ ] `NODE_ENV=production` and HTTPS. The session cookie is `Secure` in
+      production, so a plain-HTTP deploy fails sign-in even though everything
+      else works — check this first if the password is accepted but the session
+      never sticks.
+- [ ] `TRUST_PROXY_HOPS` set if behind a proxy.
+- [ ] Uploaded media backups: the volume holds `website.db` **and** the policy
+      PDFs. A database backup alone leaves the published documents unreachable.
+- [ ] Convert the deck PNGs to WebP/AVIF (see the notes below).
 
 ## Notes on the assets
 

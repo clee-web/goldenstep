@@ -8,6 +8,7 @@ import {
 } from '@shared/schemas';
 import { programmes as programmeList } from '@shared/content';
 import * as api from '@/lib/adminApi';
+import { ImageField } from './ImageField';
 import { useAction, useEditor } from './useEditor';
 import {
   Button,
@@ -68,6 +69,12 @@ export function ProjectsManager({
   });
 
   const removal = useAction();
+  /**
+   * Held here rather than inside `ImageField` so the submit button can be
+   * disabled during an upload. Saving while a file is still in flight would
+   * publish a record pointing at an image that was never written.
+   */
+  const [uploading, setUploading] = useState(false);
 
   const projects = content.projects;
   const visible = filter === 'all'
@@ -217,40 +224,24 @@ export function ProjectsManager({
             />
           </Field>
 
-          <Field
-            label="Image path"
-            htmlFor="project-image"
+          <ImageField
+            id="project-image"
+            label="Photograph"
+            value={editor.draft.image}
+            onChange={(value) =>
+              editor.setDraft((draft) => ({ ...draft, image: value }))
+            }
+            altValue={editor.draft.imageAlt}
+            onAltChange={(value) =>
+              editor.setDraft((draft) => ({ ...draft, imageAlt: value }))
+            }
             error={editor.fieldErrors.image}
-            hint="Optional. An /uploads path, /assets path or https URL."
-          >
-            <TextInput
-              id="project-image"
-              value={editor.draft.image}
-              invalid={Boolean(editor.fieldErrors.image)}
-              onChange={(value) =>
-                editor.setDraft((draft) => ({ ...draft, image: value }))
-              }
-            />
-          </Field>
-
-          <Field
-            label="Image description"
-            htmlFor="project-image-alt"
-            error={editor.fieldErrors.imageAlt}
-            hint="Required when an image is set, so screen readers can describe it."
-          >
-            <TextInput
-              id="project-image-alt"
-              value={editor.draft.imageAlt}
-              invalid={Boolean(editor.fieldErrors.imageAlt)}
-              onChange={(value) =>
-                editor.setDraft((draft) => ({ ...draft, imageAlt: value }))
-              }
-            />
-          </Field>
+            altError={editor.fieldErrors.imageAlt}
+            onBusyChange={setUploading}
+          />
 
           <div className="flex flex-wrap items-center gap-3 md:col-span-2">
-            <Button type="submit" disabled={editor.busy}>
+            <Button type="submit" disabled={editor.busy || uploading}>
               {editor.busy
                 ? 'Saving…'
                 : editor.mode === 'edit'

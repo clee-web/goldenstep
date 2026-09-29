@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#164c3d" />
+    <title>Dashboard | Golden Steps</title>
+
+    <link rel="icon" type="image/jpeg" href="/assets/logo.jpeg" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <!--
+      A physical entry point, separate from the public story.
+
+      The dashboard is a client-side route inside the single-page app, which is
+      why it works under the Express server: that server falls back to
+      index.html for any unmatched path. A static host has no such fallback, so
+      it 404s on /admin. Emitting a real admin/index.html means /admin resolves
+      to a file on every static host — Vercel, Netlify, Cloudflare Pages and
+      GitHub Pages all serve a directory's index.html — with no host-specific
+      rewrite rules to keep in sync.
+    -->
+    <script type="module" src="/src/admin-main.tsx"></script>
+  </body>
+</html>

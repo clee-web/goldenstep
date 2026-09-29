@@ -173,3 +173,81 @@ describe('unknown routes', () => {
     assert.equal((await json<ErrorBody>(res)).error, 'not_found');
   });
 });
+
+/**
+ * The enquiry limiter exists to slow down form spam, so it must not cover any
+ * other endpoint. Mounted on the `/api` prefix it silently throttled the
+ * dashboard too: one operator reloading `/admin` a few times exhausted the
+ * five-request budget and every subsequent content read came back
+ * "Too many enquiries", which looks nothing like a rate limit when you are
+ * looking at a content panel.
+ *
+ * This runs against a rate-limited app and asserts the separation directly.
+ */
+describe('rate limiting scope', () => {
+  let limitedServer: ReturnType<typeof app.listen>;
+  let limitedUrl: string;
+
+  before(async () => {
+    const limited = createApp({ enforceRateLimit: true });
+    await new Promise<void>((resolve) => {
+      limitedServer = limited.listen(0, '127.0.0.1', () => {
+        const address = limitedServer.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        limitedUrl = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve, reject) =>
+      limitedServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+
+  it('still limits the enquiry form', async () => {
+    const valid = {
+      name: 'Rate Limit Probe',
+      email: 'probe@example.org',
+      organisation: '',
+      topic: 'General enquiry',
+      message: 'A message long enough to pass validation.',
+    };
+
+    let limited = 0;
+    // Well past the five-request budget.
+    for (let i = 0; i < 8; i += 1) {
+      const res = await fetch(`${limitedUrl}/api/enquiries`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(valid),
+      });
+      if (res.status === 429) limited += 1;
+    }
+    assert.ok(limited > 0, 'the enquiry endpoint is rate limited');
+  });
+
+  it('does not limit the public content endpoint', async () => {
+    // Same app, same client, after the enquiry budget above is spent.
+    for (let i = 0; i < 8; i += 1) {
+      const res = await fetch(`${limitedUrl}/api/content`);
+      assert.equal(
+        res.status,
+        200,
+        `public content read ${i + 1} was throttled by the enquiry limiter`,
+      );
+    }
+  });
+
+  it('does not limit the admin session endpoint', async () => {
+    for (let i = 0; i < 8; i += 1) {
+      const res = await fetch(`${limitedUrl}/api/admin/session`);
+      assert.equal(
+        res.status,
+        200,
+        `admin session read ${i + 1} was throttled by the enquiry limiter`,
+      );
+    }
+  });
+});

@@ -1,0 +1,47 @@
+# Local container run, and a reference for what the platform needs to provide.
+#
+#   docker compose up --build
+#   open http://localhost:4000
+#
+# The `volumes` entry is the part that is not optional. Without it the database
+# and every uploaded image live inside the container and are destroyed by the
+# next `docker compose down`.
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Contact details are baked into the bundle by Vite at build time, so
+        # they must be passed here — setting them in `environment:` below would
+        # be too late, and the bundle would already ship them blank. Compose
+        # reads them from your local `.env`.
+        VITE_ORG_EMAIL: ${VITE_ORG_EMAIL:-}
+        VITE_ORG_PHONE: ${VITE_ORG_PHONE:-}
+        VITE_ORG_PHONE_2: ${VITE_ORG_PHONE_2:-}
+        VITE_ORG_ADDRESS: ${VITE_ORG_ADDRESS:-}
+        VITE_ORG_MAP_URL: ${VITE_ORG_MAP_URL:-}
+        VITE_ORG_REGISTRATION: ${VITE_ORG_REGISTRATION:-}
+        VITE_ORG_FACEBOOK: ${VITE_ORG_FACEBOOK:-}
+        VITE_ORG_X: ${VITE_ORG_X:-}
+        VITE_ORG_LINKEDIN: ${VITE_ORG_LINKEDIN:-}
+        VITE_ORG_INSTAGRAM: ${VITE_ORG_INSTAGRAM:-}
+    ports:
+      - '4000:4000'
+    environment:
+      NODE_ENV: production
+      PORT: '4000'
+      HOST: 0.0.0.0
+      TRUST_PROXY_HOPS: '1'
+      # Persistent location for website.db and uploads/.
+      DATA_DIR: /data
+      # Secrets. Read from your local `.env` or your platform's secret store in
+      # production — do not commit real values here.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?set ADMIN_SESSION_SECRET}
+    volumes:
+      - app-data:/data
+    restart: unless-stopped
+
+volumes:
+  app-data:

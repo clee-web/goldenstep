@@ -28,8 +28,22 @@ import {
   type TeamMemberInput,
   type TestimonialInput,
 } from '../shared/schemas.ts';
-import { JsonFile } from './json-file.ts';
-import { CONTENT_FILE } from './paths.ts';
+import { db, transact } from './sqlite.ts';
+
+/**
+ * Managed content, in SQLite.
+ *
+ * The exported functions are unchanged from the JSON implementation, which is
+ * the point: `admin-routes.ts` imports this module and cannot tell which store
+ * is behind it. Every function still returns a Promise so the routes did not
+ * have to change either — the underlying driver is synchronous, and wrapping it
+ * in `async` costs nothing but keeps the calling convention uniform.
+ *
+ * Read-time re-validation is kept from the JSON version on purpose. Requests
+ * are validated before they reach SQL, so these checks should never fire — but
+ * rows can also arrive via the one-time JSON import, and dropping one malformed
+ * row should cost the operator that one picture, not the whole dashboard.
+ */
 
 export const LIMITS = {
   pictures: 200,
@@ -40,449 +54,656 @@ export const LIMITS = {
   policies: 60,
 } as const;
 
-const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const now = (): string => new Date().toISOString();
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+/* --------------------------------- reading -------------------------------- */
 
 /**
- * Rebuilds managed content from whatever is on disk, re-validating every record
- * and silently dropping the ones that no longer parse.
- *
- * This matters because the file is hand-editable and survives deploys. A record
- * that fails validation should cost you that one picture, not the whole
- * dashboard — and it must never be able to smuggle a bad `src` past the
- * validator, since the file bypasses the request-time schemas entirely.
+ * Rows come back in insertion order (`rowid`), which is what the JSON array
+ * order used to be. Callers that care about recency sort explicitly with
+ * `sortByDateDesc`, so preserving the order the records were created in keeps
+ * the dashboard's galleries and lists behaving exactly as before.
  */
-function revive(raw: unknown): ManagedContent {
-  if (!isRecord(raw)) return emptyManagedContent();
+const insertionOrder = 'ORDER BY rowid ASC';
 
-  const pictures: ManagedPicture[] = [];
-  for (const item of asArray(raw.pictures)) {
-    if (!isRecord(item)) continue;
-    const parsed = pictureInputSchema.safeParse(item);
-    if (!parsed.success) continue;
-    pictures.push({
-      ...parsed.data,
-      id: typeof item.id === 'string' && item.id ? item.id : randomUUID(),
-      createdAt:
-        typeof item.createdAt === 'string' && item.createdAt
-          ? item.createdAt
-          : new Date().toISOString(),
-    });
-  }
-
-  const projects: ManagedProject[] = [];
-  for (const item of asArray(raw.projects)) {
-    if (!isRecord(item)) continue;
-    const parsed = projectInputSchema.safeParse(item);
-    if (!parsed.success) continue;
-    projects.push({
-      ...parsed.data,
-      id: typeof item.id === 'string' && item.id ? item.id : randomUUID(),
-      createdAt:
-        typeof item.createdAt === 'string' && item.createdAt
-          ? item.createdAt
-          : new Date().toISOString(),
-    });
-  }
-
-  const activities: ManagedActivity[] = [];
-  for (const item of asArray(raw.activities)) {
-    if (!isRecord(item)) continue;
-    const parsed = activityInputSchema.safeParse(item);
-    if (!parsed.success) continue;
-    activities.push({
-      ...parsed.data,
-      id: typeof item.id === 'string' && item.id ? item.id : randomUUID(),
-      createdAt:
-        typeof item.createdAt === 'string' && item.createdAt
-          ? item.createdAt
-          : new Date().toISOString(),
-    });
-  }
-
-  const teamMembers: ManagedTeamMember[] = [];
-  for (const item of asArray(raw.teamMembers)) {
-    if (!isRecord(item)) continue;
-    const parsed = teamMemberInputSchema.safeParse(item);
-    if (!parsed.success) continue;
-    teamMembers.push({
-      ...parsed.data,
-      id: typeof item.id === 'string' && item.id ? item.id : randomUUID(),
-      createdAt:
-        typeof item.createdAt === 'string' && item.createdAt
-          ? item.createdAt
-          : new Date().toISOString(),
-    });
-  }
-
-  const testimonials: ManagedTestimonial[] = [];
-  for (const item of asArray(raw.testimonials)) {
-    if (!isRecord(item)) continue;
-    const parsed = testimonialInputSchema.safeParse(item);
-    if (!parsed.success) continue;
-    testimonials.push({
-      ...parsed.data,
-      id: typeof item.id === 'string' && item.id ? item.id : randomUUID(),
-      createdAt:
-        typeof item.createdAt === 'string' && item.createdAt
-          ? item.createdAt
-          : new Date().toISOString(),
-    });
-  }
-
-  const policies: ManagedPolicy[] = [];
-  for (const item of asArray(raw.policies)) {
-    if (!isRecord(item)) continue;
-    const parsed = policyInputSchema.safeParse(item);
-    if (!parsed.success) continue;
-    policies.push({
-      ...parsed.data,
-      id: typeof item.id === 'string' && item.id ? item.id : randomUUID(),
-      createdAt:
-        typeof item.createdAt === 'string' && item.createdAt
-          ? item.createdAt
-          : new Date().toISOString(),
-    });
-  }
-
-  const programmes: ProgrammeOverrides = {};
-  if (isRecord(raw.programmes)) {
-    for (const [key, value] of Object.entries(raw.programmes)) {
-      // Only known ids and well-formed patches survive, so a typo in the
-      // hand-editable file cannot inject an unknown key into the rendered page.
-      if (!isProgrammeId(key)) continue;
-      const parsed = programmePatchSchema.safeParse(value);
-      if (parsed.success) programmes[key] = parsed.data;
-    }
-  }
-
-  const impactParsed = impactPatchSchema.safeParse(raw.impact ?? {});
-  const impact: ImpactPatch = impactParsed.success ? impactParsed.data : {};
+export async function readManagedContent(): Promise<ManagedContent> {
+  const handle = db();
+  const all = <T>(sql: string): T[] => handle.prepare(sql).all() as T[];
 
   return {
-    pictures,
-    projects,
-    activities,
-    teamMembers,
-    testimonials,
-    policies,
-    programmes,
-    impact,
+    pictures: collect<ManagedPicture>(all, 'pictures', pictureInputSchema),
+    projects: collect<ManagedProject>(all, 'projects', projectInputSchema),
+    activities: collect<ManagedActivity>(all, 'activities', activityInputSchema),
+    teamMembers: collect<ManagedTeamMember>(all, 'team_members', teamMemberInputSchema),
+    testimonials: collect<ManagedTestimonial>(all, 'testimonials', testimonialInputSchema),
+    policies: collect<ManagedPolicy>(all, 'policies', policyInputSchema),
+    programmes: readProgrammes(),
+    impact: readImpact(),
   };
 }
 
-const file = new JsonFile<ManagedContent>(
-  CONTENT_FILE,
-  emptyManagedContent,
-  revive,
-);
+/**
+ * Selects every row of one table and keeps the ones that still satisfy their
+ * schema, re-attaching the generated `id` and `createdAt` the input schemas do
+ * not cover.
+ */
+function collect<T extends { id: string; createdAt: string }>(
+  all: <R>(sql: string) => R[],
+  table: string,
+  schema: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
+): T[] {
+  const columns: Record<string, string> = {
+    pictures: 'id, src, alt, tag, caption, poster, captions_src AS captionsSrc',
+    projects: 'id, title, summary, programme, status, date, location, image, image_alt AS imageAlt',
+    activities: 'id, title, description, kind, date, image, image_alt AS imageAlt',
+    team_members:
+      'id, name, role, bio, image, image_alt AS imageAlt, email, sort_order AS "order"',
+    testimonials:
+      'id, name, role, testimonial, image, image_alt AS imageAlt, sort_order AS "order"',
+    policies: 'id, title, category, summary, file, date, bytes, sort_order AS "order"',
+  };
 
-export const readManagedContent = (): Promise<ManagedContent> => file.read();
+  const columnList = columns[table];
+  if (!columnList) throw new Error(`Unknown content table: ${table}`);
 
-const byNewest = <T extends { createdAt: string }>(a: T, b: T): number =>
-  b.createdAt.localeCompare(a.createdAt);
+  const rows = all<Record<string, unknown>>(
+    `SELECT id, ${columnList}, created_at AS createdAt FROM ${table} ${insertionOrder}`,
+  );
+
+  const out: T[] = [];
+  for (const row of rows) {
+    const parsed = schema.safeParse(row);
+    if (!parsed.success || !parsed.data) continue;
+    out.push({ ...(parsed.data as object), id: String(row.id), createdAt: String(row.createdAt) } as T);
+  }
+  return out;
+}
+
+function readProgrammes(): ProgrammeOverrides {
+  const rows = db()
+    .prepare(
+      `SELECT id, name, summary, description, icon, highlights,
+              beneficiaries, image, image_alt AS imageAlt, caption
+         FROM programmes`,
+    )
+    .all() as Record<string, unknown>[];
+
+  const programmes: ProgrammeOverrides = {};
+  for (const row of rows) {
+    const id = String(row.id);
+    // Checked against the canonical list rather than against what is stored, so
+    // a hand-added row cannot inject an unknown key into the rendered page.
+    if (!isProgrammeId(id)) continue;
+
+    // A null column means "not overridden" and must stay absent from the patch.
+    // Rebuilding the object key by key is what preserves that: spreading the
+    // row would carry explicit nulls, and `{...{name: null}}` would blank the
+    // static default instead of falling back to it.
+    const patch: Record<string, unknown> = {};
+    for (const [column, key] of [
+      ['name', 'name'],
+      ['summary', 'summary'],
+      ['description', 'description'],
+      ['icon', 'icon'],
+      ['beneficiaries', 'beneficiaries'],
+      ['image', 'image'],
+      ['imageAlt', 'imageAlt'],
+      ['caption', 'caption'],
+    ] as const) {
+      const value = row[column];
+      if (value !== null && value !== undefined) patch[key] = value;
+    }
+
+    if (row.highlights !== null && row.highlights !== undefined) {
+      try {
+        const parsed = JSON.parse(String(row.highlights));
+        if (Array.isArray(parsed)) patch.highlights = parsed;
+      } catch {
+        // Unparseable JSON is treated as "not set" rather than fatal.
+      }
+    }
+
+    const parsed = programmePatchSchema.safeParse(patch);
+    if (parsed.success) programmes[id] = parsed.data;
+  }
+  return programmes;
+}
+
+function readImpact(): ImpactPatch {
+  const row = db()
+    .prepare('SELECT lead, total_label AS totalLabel, total_caption AS totalCaption FROM impact WHERE singleton = 1')
+    .get() as Record<string, unknown> | undefined;
+  if (!row) return {};
+
+  const patch: Record<string, unknown> = {};
+  for (const key of ['lead', 'totalLabel', 'totalCaption'] as const) {
+    const value = row[key];
+    if (value !== null && value !== undefined) patch[key] = value;
+  }
+
+  const parsed = impactPatchSchema.safeParse(patch);
+  return parsed.success ? parsed.data : {};
+}
+
+/* --------------------------------- writing -------------------------------- */
+
+/**
+ * Per-table ceilings, keyed by the SQL table name.
+ *
+ * Keyed by table rather than reusing `LIMITS` directly because the SQL names are
+ * snake_case (`team_members`) while the public constant is camelCase
+ * (`teamMembers`). Keeping one map means a call site cannot pass a limit that
+ * belongs to a different table, which the two-argument form could not prevent.
+ */
+const CAPS = {
+  pictures: { limit: LIMITS.pictures, label: 'Picture' },
+  projects: { limit: LIMITS.projects, label: 'Project' },
+  activities: { limit: LIMITS.activities, label: 'Activity' },
+  team_members: { limit: LIMITS.teamMembers, label: 'Team member' },
+  testimonials: { limit: LIMITS.testimonials, label: 'Testimonial' },
+  policies: { limit: LIMITS.policies, label: 'Policy' },
+} as const;
+
+type CappedTable = keyof typeof CAPS;
+
+/**
+ * Enforces a per-table record ceiling inside the caller's transaction.
+ *
+ * The count and the insert share a transaction, so two concurrent saves cannot
+ * both observe `limit - 1` and both insert, which is exactly the overshoot a
+ * JSON store with an in-process lock could not suffer.
+ */
+function assertUnderLimit(table: CappedTable): void {
+  const { limit, label } = CAPS[table];
+  const { count } = db()
+    .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+    .get() as { count: number };
+  if (count >= limit) throw new LimitError(`${label} limit of ${limit} reached.`);
+}
 
 /* ------------------------------- pictures -------------------------------- */
 
-export function addPicture(input: PictureInput): Promise<ManagedPicture> {
-  return file.update((content) => {
-    if (content.pictures.length >= LIMITS.pictures) {
-      throw new LimitError(`Picture limit of ${LIMITS.pictures} reached.`);
-    }
-    const picture: ManagedPicture = {
-      ...input,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    content.pictures.push(picture);
-    return picture;
+export async function addPicture(input: PictureInput): Promise<ManagedPicture> {
+  return transact(() => {
+    assertUnderLimit('pictures');
+    const id = randomUUID();
+    const createdAt = now();
+    db()
+      .prepare(
+        `INSERT INTO pictures (id, src, alt, tag, caption, poster, captions_src, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, input.src, input.alt, input.tag, input.caption, input.poster, input.captionsSrc, createdAt);
+    return { ...input, id, createdAt };
   });
 }
 
-export function updatePicture(
+export async function updatePicture(
   id: string,
   input: PictureInput,
 ): Promise<ManagedPicture | null> {
-  return file.update((content) => {
-    const index = content.pictures.findIndex((picture) => picture.id === id);
-    if (index === -1) return null;
-    const existing = content.pictures[index];
+  return transact(() => {
+    const existing = db().prepare('SELECT created_at FROM pictures WHERE id = ?').get(id) as
+      | { created_at: string }
+      | undefined;
     if (!existing) return null;
-    const updated: ManagedPicture = { ...existing, ...input };
-    content.pictures[index] = updated;
-    return updated;
+    // `id` and `created_at` are deliberately not bound from `input`: the record
+    // keeps its identity and its position in the list across an edit, which is
+    // what the dashboard's inline editing expects.
+    db()
+      .prepare(
+        `UPDATE pictures SET src = ?, alt = ?, tag = ?, caption = ?, poster = ?, captions_src = ?
+          WHERE id = ?`,
+      )
+      .run(input.src, input.alt, input.tag, input.caption, input.poster, input.captionsSrc, id);
+    return { ...input, id, createdAt: existing.created_at };
   });
 }
 
-export function deletePicture(id: string): Promise<ManagedPicture | null> {
-  return file.update((content) => {
-    const index = content.pictures.findIndex((picture) => picture.id === id);
-    // Guard before splicing: `splice(-1, 1)` would silently delete the last
-    // record, so a stale id from the dashboard could destroy unrelated data.
-    if (index === -1) return null;
-    const [removed] = content.pictures.splice(index, 1);
-    return removed ?? null;
+export async function deletePicture(id: string): Promise<ManagedPicture | null> {
+  return transact(() => {
+    const row = db()
+      .prepare(
+        `SELECT id, src, alt, tag, caption, poster, captions_src AS captionsSrc, created_at AS createdAt
+           FROM pictures WHERE id = ?`,
+      )
+      .get(id) as ManagedPicture | undefined;
+    if (!row) return null;
+    db().prepare('DELETE FROM pictures WHERE id = ?').run(id);
+    return row;
   });
 }
 
 /* -------------------------------- projects ------------------------------- */
 
-export function addProject(input: ProjectInput): Promise<ManagedProject> {
-  return file.update((content) => {
-    if (content.projects.length >= LIMITS.projects) {
-      throw new LimitError(`Project limit of ${LIMITS.projects} reached.`);
-    }
-    const project: ManagedProject = {
-      ...input,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    content.projects.push(project);
-    return project;
+export async function addProject(input: ProjectInput): Promise<ManagedProject> {
+  return transact(() => {
+    assertUnderLimit('projects');
+    const id = randomUUID();
+    const createdAt = now();
+    db()
+      .prepare(
+        `INSERT INTO projects (id, title, summary, programme, status, date, location, image, image_alt, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id, input.title, input.summary, input.programme, input.status,
+        input.date, input.location, input.image, input.imageAlt, createdAt,
+      );
+    return { ...input, id, createdAt };
   });
 }
 
-export function updateProject(
+export async function updateProject(
   id: string,
   input: ProjectInput,
 ): Promise<ManagedProject | null> {
-  return file.update((content) => {
-    const index = content.projects.findIndex((project) => project.id === id);
-    if (index === -1) return null;
-    const existing = content.projects[index];
+  return transact(() => {
+    const existing = db().prepare('SELECT created_at FROM projects WHERE id = ?').get(id) as
+      | { created_at: string }
+      | undefined;
     if (!existing) return null;
-    const updated: ManagedProject = { ...existing, ...input };
-    content.projects[index] = updated;
-    return updated;
+    db()
+      .prepare(
+        `UPDATE projects SET title = ?, summary = ?, programme = ?, status = ?, date = ?,
+                             location = ?, image = ?, image_alt = ?
+          WHERE id = ?`,
+      )
+      .run(
+        input.title, input.summary, input.programme, input.status,
+        input.date, input.location, input.image, input.imageAlt, id,
+      );
+    return { ...input, id, createdAt: existing.created_at };
   });
 }
 
-export function deleteProject(id: string): Promise<ManagedProject | null> {
-  return file.update((content) => {
-    const index = content.projects.findIndex((project) => project.id === id);
-    if (index === -1) return null;
-    const [removed] = content.projects.splice(index, 1);
-    return removed ?? null;
+export async function deleteProject(id: string): Promise<ManagedProject | null> {
+  return transact(() => {
+    const row = db()
+      .prepare(
+        `SELECT id, title, summary, programme, status, date, location, image, image_alt AS imageAlt,
+                created_at AS createdAt
+           FROM projects WHERE id = ?`,
+      )
+      .get(id) as ManagedProject | undefined;
+    if (!row) return null;
+    db().prepare('DELETE FROM projects WHERE id = ?').run(id);
+    return row;
   });
 }
 
-/* ------------------------------- activities ------------------------------ */
+/* ------------------------------ activities ------------------------------ */
 
-export function addActivity(input: ActivityInput): Promise<ManagedActivity> {
-  return file.update((content) => {
-    if (content.activities.length >= LIMITS.activities) {
-      throw new LimitError(`Activity limit of ${LIMITS.activities} reached.`);
-    }
-    const activity: ManagedActivity = {
-      ...input,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    content.activities.push(activity);
-    return activity;
+export async function addActivity(input: ActivityInput): Promise<ManagedActivity> {
+  return transact(() => {
+    assertUnderLimit('activities');
+    const id = randomUUID();
+    const createdAt = now();
+    db()
+      .prepare(
+        `INSERT INTO activities (id, title, description, kind, date, image, image_alt, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id, input.title, input.description, input.kind,
+        input.date, input.image, input.imageAlt, createdAt,
+      );
+    return { ...input, id, createdAt };
   });
 }
 
-export function updateActivity(
+export async function updateActivity(
   id: string,
   input: ActivityInput,
 ): Promise<ManagedActivity | null> {
-  return file.update((content) => {
-    const index = content.activities.findIndex((activity) => activity.id === id);
-    if (index === -1) return null;
-    const existing = content.activities[index];
+  return transact(() => {
+    const existing = db().prepare('SELECT created_at FROM activities WHERE id = ?').get(id) as
+      | { created_at: string }
+      | undefined;
     if (!existing) return null;
-    const updated: ManagedActivity = { ...existing, ...input };
-    content.activities[index] = updated;
-    return updated;
+    db()
+      .prepare(
+        `UPDATE activities SET title = ?, description = ?, kind = ?, date = ?, image = ?, image_alt = ?
+          WHERE id = ?`,
+      )
+      .run(
+        input.title, input.description, input.kind,
+        input.date, input.image, input.imageAlt, id,
+      );
+    return { ...input, id, createdAt: existing.created_at };
   });
 }
 
-export function deleteActivity(id: string): Promise<ManagedActivity | null> {
-  return file.update((content) => {
-    const index = content.activities.findIndex((activity) => activity.id === id);
-    if (index === -1) return null;
-    const [removed] = content.activities.splice(index, 1);
-    return removed ?? null;
+export async function deleteActivity(id: string): Promise<ManagedActivity | null> {
+  return transact(() => {
+    const row = db()
+      .prepare(
+        `SELECT id, title, description, kind, date, image, image_alt AS imageAlt, created_at AS createdAt
+           FROM activities WHERE id = ?`,
+      )
+      .get(id) as ManagedActivity | undefined;
+    if (!row) return null;
+    db().prepare('DELETE FROM activities WHERE id = ?').run(id);
+    return row;
   });
 }
 
 /* --------------------------------- team ---------------------------------- */
 
-export function addTeamMember(input: TeamMemberInput): Promise<ManagedTeamMember> {
-  return file.update((content) => {
-    if (content.teamMembers.length >= LIMITS.teamMembers) {
-      throw new LimitError(`Team member limit of ${LIMITS.teamMembers} reached.`);
-    }
-    const teamMember: ManagedTeamMember = {
-      ...input,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    content.teamMembers.push(teamMember);
-    return teamMember;
+export async function addTeamMember(input: TeamMemberInput): Promise<ManagedTeamMember> {
+  return transact(() => {
+    assertUnderLimit('team_members');
+    const id = randomUUID();
+    const createdAt = now();
+    db()
+      .prepare(
+        `INSERT INTO team_members (id, name, role, bio, image, image_alt, email, sort_order, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id, input.name, input.role, input.bio, input.image, input.imageAlt,
+        input.email, input.order, createdAt,
+      );
+    return { ...input, id, createdAt };
   });
 }
 
-export function updateTeamMember(
+export async function updateTeamMember(
   id: string,
   input: TeamMemberInput,
 ): Promise<ManagedTeamMember | null> {
-  return file.update((content) => {
-    const index = content.teamMembers.findIndex((member) => member.id === id);
-    if (index === -1) return null;
-    const existing = content.teamMembers[index];
+  return transact(() => {
+    const existing = db().prepare('SELECT created_at FROM team_members WHERE id = ?').get(id) as
+      | { created_at: string }
+      | undefined;
     if (!existing) return null;
-    const updated: ManagedTeamMember = { ...existing, ...input };
-    content.teamMembers[index] = updated;
-    return updated;
+    db()
+      .prepare(
+        `UPDATE team_members SET name = ?, role = ?, bio = ?, image = ?, image_alt = ?,
+                                email = ?, sort_order = ?
+          WHERE id = ?`,
+      )
+      .run(
+        input.name, input.role, input.bio, input.image, input.imageAlt,
+        input.order, id,
+      );
+    return { ...input, id, createdAt: existing.created_at };
   });
 }
 
-export function deleteTeamMember(id: string): Promise<ManagedTeamMember | null> {
-  return file.update((content) => {
-    const index = content.teamMembers.findIndex((member) => member.id === id);
-    if (index === -1) return null;
-    const [removed] = content.teamMembers.splice(index, 1);
-    return removed ?? null;
+export async function deleteTeamMember(id: string): Promise<ManagedTeamMember | null> {
+  return transact(() => {
+    const row = db()
+      .prepare(
+        `SELECT id, name, role, bio, image, image_alt AS imageAlt, email,
+                sort_order AS "order", created_at AS createdAt
+           FROM team_members WHERE id = ?`,
+      )
+      .get(id) as ManagedTeamMember | undefined;
+    if (!row) return null;
+    db().prepare('DELETE FROM team_members WHERE id = ?').run(id);
+    return row;
   });
 }
 
-/* ----------------------------- testimonials ------------------------------ */
+/* ------------------------------ testimonials ----------------------------- */
 
-export function addTestimonial(input: TestimonialInput): Promise<ManagedTestimonial> {
-  return file.update((content) => {
-    if (content.testimonials.length >= LIMITS.testimonials) {
-      throw new LimitError(`Testimonial limit of ${LIMITS.testimonials} reached.`);
-    }
-    const testimonial: ManagedTestimonial = {
-      ...input,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    content.testimonials.push(testimonial);
-    return testimonial;
+export async function addTestimonial(input: TestimonialInput): Promise<ManagedTestimonial> {
+  return transact(() => {
+    assertUnderLimit('testimonials');
+    const id = randomUUID();
+    const createdAt = now();
+    db()
+      .prepare(
+        `INSERT INTO testimonials (id, name, role, testimonial, image, image_alt, sort_order, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id, input.name, input.role, input.testimonial, input.image, input.imageAlt,
+        input.order, createdAt,
+      );
+    return { ...input, id, createdAt };
   });
 }
 
-export function updateTestimonial(
+export async function updateTestimonial(
   id: string,
   input: TestimonialInput,
 ): Promise<ManagedTestimonial | null> {
-  return file.update((content) => {
-    const index = content.testimonials.findIndex(
-      (testimonial) => testimonial.id === id,
-    );
-    if (index === -1) return null;
-    const existing = content.testimonials[index];
+  return transact(() => {
+    const existing = db().prepare('SELECT created_at FROM testimonials WHERE id = ?').get(id) as
+      | { created_at: string }
+      | undefined;
     if (!existing) return null;
-    const updated: ManagedTestimonial = { ...existing, ...input };
-    content.testimonials[index] = updated;
-    return updated;
+    db()
+      .prepare(
+        `UPDATE testimonials SET name = ?, role = ?, testimonial = ?, image = ?, image_alt = ?, sort_order = ?
+          WHERE id = ?`,
+      )
+      .run(
+        input.name, input.role, input.testimonial, input.image, input.imageAlt,
+        input.order, id,
+      );
+    return { ...input, id, createdAt: existing.created_at };
   });
 }
 
-export function deleteTestimonial(id: string): Promise<ManagedTestimonial | null> {
-  return file.update((content) => {
-    const index = content.testimonials.findIndex(
-      (testimonial) => testimonial.id === id,
-    );
-    if (index === -1) return null;
-    const [removed] = content.testimonials.splice(index, 1);
-    return removed ?? null;
+export async function deleteTestimonial(id: string): Promise<ManagedTestimonial | null> {
+  return transact(() => {
+    const row = db()
+      .prepare(
+        `SELECT id, name, role, testimonial, image, image_alt AS imageAlt,
+                sort_order AS "order", created_at AS createdAt
+           FROM testimonials WHERE id = ?`,
+      )
+      .get(id) as ManagedTestimonial | undefined;
+    if (!row) return null;
+    db().prepare('DELETE FROM testimonials WHERE id = ?').run(id);
+    return row;
   });
 }
 
 /* -------------------------------- policies -------------------------------- */
 
-export function addPolicy(input: PolicyInput): Promise<ManagedPolicy> {
-  return file.update((content) => {
-    if (content.policies.length >= LIMITS.policies) {
-      throw new LimitError(`Policy limit of ${LIMITS.policies} reached.`);
-    }
-    const policy: ManagedPolicy = {
-      ...input,
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    content.policies.push(policy);
-    return policy;
+export async function addPolicy(input: PolicyInput): Promise<ManagedPolicy> {
+  return transact(() => {
+    assertUnderLimit('policies');
+    const id = randomUUID();
+    const createdAt = now();
+    db()
+      .prepare(
+        `INSERT INTO policies (id, title, category, summary, file, date, bytes, sort_order, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id, input.title, input.category, input.summary, input.file,
+        input.date, input.bytes, input.order, createdAt,
+      );
+    return { ...input, id, createdAt };
   });
 }
 
-export function updatePolicy(
+export async function updatePolicy(
   id: string,
   input: PolicyInput,
 ): Promise<ManagedPolicy | null> {
-  return file.update((content) => {
-    const index = content.policies.findIndex((policy) => policy.id === id);
-    if (index === -1) return null;
-    const existing = content.policies[index];
+  return transact(() => {
+    const existing = db().prepare('SELECT created_at FROM policies WHERE id = ?').get(id) as
+      | { created_at: string }
+      | undefined;
     if (!existing) return null;
-    const updated: ManagedPolicy = { ...existing, ...input };
-    content.policies[index] = updated;
-    return updated;
+    db()
+      .prepare(
+        `UPDATE policies SET title = ?, category = ?, summary = ?, file = ?, date = ?, bytes = ?, sort_order = ?
+          WHERE id = ?`,
+      )
+      .run(
+        input.title, input.category, input.summary, input.file,
+        input.date, input.bytes, input.order, id,
+      );
+    return { ...input, id, createdAt: existing.created_at };
   });
 }
 
-export function deletePolicy(id: string): Promise<ManagedPolicy | null> {
-  return file.update((content) => {
-    const index = content.policies.findIndex((policy) => policy.id === id);
-    if (index === -1) return null;
-    const [removed] = content.policies.splice(index, 1);
-    return removed ?? null;
+export async function deletePolicy(id: string): Promise<ManagedPolicy | null> {
+  return transact(() => {
+    const row = db()
+      .prepare(
+        `SELECT id, title, category, summary, file, date, bytes, sort_order AS "order",
+                created_at AS createdAt
+           FROM policies WHERE id = ?`,
+      )
+      .get(id) as ManagedPolicy | undefined;
+    if (!row) return null;
+    db().prepare('DELETE FROM policies WHERE id = ?').run(id);
+    return row;
   });
 }
 
 /* ------------------------- programmes and impact ------------------------- */
 
-export function patchProgramme(
+export async function patchProgramme(
   id: string,
   patch: ProgrammeOverrides[string],
 ): Promise<ProgrammeOverrides | null> {
-  return file.update((content) => {
-    // Check the id against the canonical list, not against existing overrides.
-    // Overrides start empty, so testing the current map would reject the very
-    // first edit to any programme and make the editor look broken.
+  return transact(() => {
+    // Checked against the canonical list, not against stored rows. Overrides
+    // start empty, so testing what exists would reject the very first edit to
+    // any programme and make the editor look broken.
     if (!isProgrammeId(id)) return null;
 
-    const merged: ProgrammeOverrides[string] = { ...content.programmes[id], ...patch };
+    const current = readProgrammeRow(id);
+    const merged: Record<string, unknown> = { ...current };
 
-    // The image/alt-text pairing is an invariant of the *merged* programme, not
-    // of the patch: swapping the image while keeping existing alt text is
-    // perfectly valid, and must not be forced into retyping the description.
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) continue;
+      merged[key] = value;
+    }
+
+    /*
+     * The image/alt-text pairing is an invariant of the *merged* programme, not
+     * of the patch: swapping the image while keeping existing alt text is
+     * perfectly valid, and must not be forced into retyping the description.
+     */
     const base = staticProgrammes.find((programme) => programme.id === id);
-    const image = merged.image ?? base?.image ?? '';
-    const imageAlt = merged.imageAlt ?? base?.imageAlt ?? '';
+    const image = (merged.image as string | undefined) ?? base?.image ?? '';
+    const imageAlt = (merged.imageAlt as string | undefined) ?? base?.imageAlt ?? '';
     if (image && imageAlt.trim().length < 3) {
       throw new ContentValidationError('Describe the image for screen readers.', 'imageAlt');
     }
 
-    content.programmes[id] = merged;
-    return content.programmes;
+    db()
+      .prepare(
+        `INSERT INTO programmes (id, name, summary, description, icon, highlights,
+                                 beneficiaries, image, image_alt, caption, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name          = COALESCE(excluded.name, programmes.name),
+           summary       = COALESCE(excluded.summary, programmes.summary),
+           description   = COALESCE(excluded.description, programmes.description),
+           icon          = COALESCE(excluded.icon, programmes.icon),
+           highlights    = COALESCE(excluded.highlights, programmes.highlights),
+           beneficiaries = COALESCE(excluded.beneficiaries, programmes.beneficiaries),
+           image         = COALESCE(excluded.image, programmes.image),
+           image_alt     = COALESCE(excluded.image_alt, programmes.image_alt),
+           caption       = COALESCE(excluded.caption, programmes.caption),
+           updated_at    = excluded.updated_at`,
+      )
+      .run(
+        id,
+        (merged.name as string) ?? null,
+        (merged.summary as string) ?? null,
+        (merged.description as string) ?? null,
+        (merged.icon as string) ?? null,
+        merged.highlights === undefined ? null : JSON.stringify(merged.highlights),
+        (merged.beneficiaries as number) ?? null,
+        (merged.image as string) ?? null,
+        (merged.imageAlt as string) ?? null,
+        (merged.caption as string) ?? null,
+        now(),
+      );
+
+    return readProgrammes();
   });
 }
 
-export function patchImpact(patch: ImpactPatch): Promise<ImpactPatch> {
-  return file.update((content) => {
-    content.impact = { ...content.impact, ...patch };
-    return content.impact;
+/** The stored override for one programme, as a sparse patch. Nulls are dropped. */
+function readProgrammeRow(id: string): Record<string, unknown> {
+  const row = db()
+    .prepare(
+      `SELECT name, summary, description, icon, highlights, beneficiaries, image,
+              image_alt AS imageAlt, caption
+         FROM programmes WHERE id = ?`,
+    )
+    .get(id) as Record<string, unknown> | undefined;
+  if (!row) return {};
+
+  const patch: Record<string, unknown> = {};
+  for (const [column, key] of [
+    ['name', 'name'],
+    ['summary', 'summary'],
+    ['description', 'description'],
+    ['icon', 'icon'],
+    ['beneficiaries', 'beneficiaries'],
+    ['image', 'image'],
+    ['imageAlt', 'imageAlt'],
+    ['caption', 'caption'],
+  ] as const) {
+    const value = row[column];
+    if (value !== null && value !== undefined) patch[key] = value;
+  }
+  if (row.highlights !== null && row.highlights !== undefined) {
+    try {
+      const parsed = JSON.parse(String(row.highlights));
+      if (Array.isArray(parsed)) patch.highlights = parsed;
+    } catch {
+      /* treat as unset */
+    }
+  }
+  return patch;
+}
+
+export async function patchImpact(patch: ImpactPatch): Promise<ImpactPatch> {
+  return transact(() => {
+    const current = readImpact();
+    const merged = { ...current, ...patch };
+
+    db()
+      .prepare(
+        `INSERT INTO impact (singleton, lead, total_label, total_caption, updated_at)
+         VALUES (1, ?, ?, ?, ?)
+         ON CONFLICT(singleton) DO UPDATE SET
+           lead         = COALESCE(excluded.lead, impact.lead),
+           total_label  = COALESCE(excluded.total_label, impact.total_label),
+           total_caption= COALESCE(excluded.total_caption, impact.total_caption),
+           updated_at   = excluded.updated_at`,
+      )
+      .run(
+        merged.lead ?? null,
+        merged.totalLabel ?? null,
+        merged.totalCaption ?? null,
+        now(),
+      );
+
+    return readImpact();
   });
 }
 
-export function resetContent(): Promise<ManagedContent> {
-  return file.update((content) => {
-    content.pictures = [];
-    content.projects = [];
-    content.activities = [];
-    content.teamMembers = [];
-    content.testimonials = [];
-    content.policies = [];
-    content.programmes = {};
-    content.impact = {};
-    return content;
+export async function resetContent(): Promise<ManagedContent> {
+  return transact(() => {
+    for (const table of [
+      'pictures',
+      'projects',
+      'activities',
+      'team_members',
+      'testimonials',
+      'policies',
+      'programmes',
+      'impact',
+    ]) {
+      db().prepare(`DELETE FROM ${table}`).run();
+    }
+    return emptyManagedContent();
   });
 }
 
@@ -492,7 +713,7 @@ export function resetContent(): Promise<ManagedContent> {
 export const sortByDateDesc = <T extends { date: string; createdAt: string }>(
   a: T,
   b: T,
-): number => b.date.localeCompare(a.date) || byNewest(a, b);
+): number => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt);
 
 export class LimitError extends Error {
   constructor(message: string) {
