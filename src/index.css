@@ -1,0 +1,289 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Palette lifted from the Golden Steps brand deck. */
+  --color-ink: #18231e;
+  --color-muted: #617069;
+  --color-cream: #f7f4ed;
+  --color-paper: #fffdf8;
+  --color-line: #dfe4dc;
+
+  --color-brand: #164c3d;
+  --color-brand-600: #236452;
+  --color-brand-700: #285344;
+  --color-brand-900: #10251f;
+
+  --color-gold: #d9a441;
+  --color-gold-soft: #e4bf71;
+
+  /* Darkened from the deck's #d86e52: at 11px bold the original only reached
+     3.04:1 on cream, below the 4.5:1 WCAG AA minimum. This is 5.29:1 and
+     still reads as the same warm terracotta. */
+  --color-coral: #ab452c;
+
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Playfair Display', ui-serif, Georgia, serif;
+
+  --radius-shell: 24px;
+
+  --shadow-shell: 0 20px 60px rgb(24 35 30 / 0.1);
+  --shadow-lift: 0 12px 28px rgb(22 76 61 / 0.2);
+  /* The header once it has condensed, and the menus that hang from it. Kept
+     shallow and close in tone: a heavy drop shadow would read as UI chrome. */
+  --shadow-bar: 0 10px 24px -18px rgb(24 35 30 / 0.45);
+  --shadow-panel: 0 24px 48px -28px rgb(16 37 31 / 0.38);
+  --shadow-mark: 0 6px 14px -10px rgb(22 76 61 / 0.55);
+
+  /*
+   * Two curves, deliberately few. `--ease-settle` has weight and takes its time
+   * to arrive, so anything entering the page feels placed rather than dropped.
+   * `--ease-state` is the quick curve for hover, focus and open/close, where the
+   * reader is waiting on a response and should not be.
+   */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-state: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --animate-marquee: marquee 34s linear infinite;
+  --animate-fade-up: fade-up 0.6s cubic-bezier(0.4, 0.05, 0.2, 1) both;
+}
+
+@keyframes nav-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /*
+   * Entrance animations that translate on the X axis would otherwise widen the
+   * page and allow sideways scroll. Contained here on `main` rather than on
+   * `body` or `html`: any non-visible overflow on those two turns them into
+   * scroll containers, which stops the viewport scrolling normally.
+   * `clip` (not `hidden`) never creates a scroll container, and `main` is not
+   * the root, so the sticky header is unaffected.
+   */
+  main {
+    overflow-x: clip;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    line-height: 1.04;
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  /*
+   * The focus ring, pinned to one token for the whole page.
+   *
+   * `outline-color` is stated separately from the `outline` shorthand on purpose.
+   * `outline-color`'s initial value is `currentColor`, so any later rule that
+   * turns an outline *on* without naming a colour falls back to that element's
+   * own text colour, and the ring then changes as the reader tabs across
+   * controls that happen to be differently coloured. Stating it here means one
+   * ring colour covers the entire light chrome.
+   *
+   * It is `brand-600` (6.85:1 on paper) and never gold: gold against the paper
+   * header is 1.74:1, which is a ring a reader cannot see.
+   */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-color: var(--color-brand-600);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--color-gold);
+    color: var(--color-brand-900);
+  }
+}
+
+@layer components {
+  .shell {
+    width: min(calc(100% - 2.5rem), 1180px);
+    margin-inline: auto;
+  }
+
+  @media (max-width: 560px) {
+    .shell {
+      width: min(calc(100% - 1.75rem), 1180px);
+    }
+  }
+
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--color-coral);
+  }
+
+  /*
+   * The header's scroll-progress hairline. The factor arrives as a custom
+   * property written from a rAF-coalesced scroll listener, so the bar tracks the
+   * page without React re-rendering the navigation on every frame. The `0`
+   * fallback is what stops a full-width bar flashing on the first paint, before
+   * the listener has run.
+   */
+  .progress-fill {
+    transform: scaleX(var(--gs-progress, 0));
+    transition: transform 140ms var(--ease-state);
+  }
+
+  /*
+   * The brand's steps motif. Retracted, the transition is zero length so a
+   * replay snaps the line back instantly; drawn, it is the slow one and each
+   * tread is offset by its own delay, so the mark climbs.
+   */
+  .steps-motif path {
+    stroke-dashoffset: 1;
+    transition: stroke-dashoffset 0ms linear;
+  }
+
+  .steps-motif[data-drawn='true'] path {
+    stroke-dashoffset: 0;
+    transition: stroke-dashoffset 480ms var(--ease-settle);
+    transition-delay: var(--step-delay, 0ms);
+  }
+
+  /*
+   * Rows in a desktop menu panel. A keyframe rather than a transition because
+   * these enter a panel that is *already* open: switching groups remounts them,
+   * and only a mount animation replays the stagger. It is gated on the panel's
+   * own `data-open` so closing never replays it.
+   */
+  [data-open='true'] .nav-row {
+    animation: nav-row-in 260ms var(--ease-settle) both;
+    animation-delay: var(--row-delay, 0ms);
+  }
+
+  /*
+   * Rows in the mobile sheet, which do mount *before* the sheet opens, so a
+   * transition is enough: the sheet's own wipe carries the movement and the rows
+   * only have to arrive.
+   */
+  .drawer-row {
+    opacity: 0;
+    transform: translateY(8px);
+    transition:
+      opacity 240ms var(--ease-settle),
+      transform 240ms var(--ease-settle);
+    transition-delay: var(--row-delay, 0ms);
+  }
+
+  [data-open='true'] .drawer-row {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* The mobile sheet unrolls from the bar it is anchored to. */
+  .drawer {
+    clip-path: inset(0 0 100% 0);
+    transition: clip-path 320ms var(--ease-settle);
+  }
+
+  [data-open='true'].drawer {
+    clip-path: inset(0 0 0% 0);
+  }
+}
+
+/*
+ * The in-page anchor reservation, in the `utilities` layer on purpose.
+ *
+ * Every section still carries Tailwind's `scroll-mt-24`, which is 96px. That
+ * covers the header's *condensed* stack (34px top bar + 60px row + 1px border
+ * = 95px) and is 17px short of its *resting* stack (34 + 78 + 1 = 113px on
+ * desktop, 103px on mobile). No heading has ever actually been occluded, but
+ * only because each section happens to carry ~110px of top padding above its
+ * first line. That is an accident of the section padding rather than a margin
+ * anyone should be designing against, and in the condensed case it left 1px of
+ * air. The reservation has to clear the *tallest* state, not the shortest.
+ *
+ * This cannot live in `@layer base`: a cascade layer beats specificity, so even
+ * a `(0,1,1)` selector in `base` loses to the `(0,1,0)` `scroll-mt-24` utility
+ * sitting in the later `utilities` layer. Same layer plus higher specificity
+ * wins, which also means a section nobody has cleaned up still gets the safe
+ * offset instead of the short one.
+ *
+ * When the nine `scroll-mt-24` classes come off the section elements, this rule
+ * can move back to `@layer base` and the utilities layer can go with it.
+ */
+@layer utilities {
+  section[id] {
+    scroll-margin-top: 120px;
+  }
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  /*
+   * Delays are neutralised alongside durations: a staggered reveal that kept its
+   * stagger would still make the reader wait for it, one row at a time.
+   */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
+}
