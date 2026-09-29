@@ -6,6 +6,7 @@ import { enquirySchema } from '../shared/schemas.ts';
 import type { ApiError, ContentResponse, EnquiryResponse } from '../shared/schemas.ts';
 import { readManagedContent, sortByDateDesc } from './content-store.ts';
 import { countEnquiries, listEnquiries, saveEnquiry } from './store.ts';
+import { sendEnquiryEmail } from './email.ts';
 
 export const api = Router();
 
@@ -100,6 +101,11 @@ api.post('/enquiries', async (req, res, next) => {
 
     const { website: _honeypot, ...input } = parsed.data;
     const record = await saveEnquiry(input);
+
+    // Send email notification (non-blocking, doesn't fail the request if email fails)
+    sendEnquiryEmail(input).catch((error) => {
+      console.error('Email sending failed (but enquiry was saved):', error);
+    });
 
     const body: EnquiryResponse = {
       ok: true,
