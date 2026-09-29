@@ -40,25 +40,39 @@ export function TopBar() {
           </span>
         </p>
 
-        <a
-          href="#contact"
-          className="group/link inline-flex shrink-0 items-center gap-1.5 font-bold transition-colors duration-[220ms] ease-state hover:text-gold-soft"
-        >
-          Partner with us
-          {/* `gold-soft`, not `gold`: on this green `--color-gold` measures
-              4.37:1, which fails AA for text by 0.13. (`--color-gold` is far
-              worse on the cream and paper surfaces, at 2.2:1 and 2.05:1 — that
-              is the figure behind the palette's wider warning, but it is not
-              the one that applies here.) `gold-soft` reaches 5.61:1 on the same
-              background. The arrow below keeps plain gold, being decoration
-              that the link's own text already carries. */}
-          <span
-            aria-hidden="true"
-            className="text-gold transition-transform duration-[260ms] ease-settle group-hover/link:translate-x-1"
+        <div className="flex items-center gap-4">
+          <a
+            href="/admin"
+            className="group/admin inline-flex shrink-0 items-center gap-1.5 font-bold transition-colors duration-[220ms] ease-state hover:text-gold-soft"
           >
-            →
-          </span>
-        </a>
+            Admin
+            <span
+              aria-hidden="true"
+              className="text-gold transition-transform duration-[260ms] ease-settle group-hover/admin:translate-x-1"
+            >
+              →
+            </span>
+          </a>
+          <a
+            href="#contact"
+            className="group/link inline-flex shrink-0 items-center gap-1.5 font-bold transition-colors duration-[220ms] ease-state hover:text-gold-soft"
+          >
+            Partner with us
+            {/* `gold-soft`, not `gold`: on this green `--color-gold` measures
+                4.37:1, which fails AA for text by 0.13. (`--color-gold` is far
+                worse on the cream and paper surfaces, at 2.2:1 and 2.05:1 — that
+                is the figure behind the palette's wider warning, but it is not
+                the one that applies here.) `gold-soft` reaches 5.61:1 on the same
+                background. The arrow below keeps plain gold, being decoration
+                that the link's own text already carries. */}
+            <span
+              aria-hidden="true"
+              className="text-gold transition-transform duration-[260ms] ease-settle group-hover/link:translate-x-1"
+            >
+              →
+            </span>
+          </a>
+        </div>
       </div>
     </aside>
   );
