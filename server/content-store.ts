@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { z } from 'zod';
+
 import { programmes as staticProgrammes } from '../shared/content.ts';
 import {
   activityInputSchema,
@@ -90,7 +92,7 @@ export async function readManagedContent(): Promise<ManagedContent> {
 function collect<T extends { id: string; createdAt: string }>(
   all: <R>(sql: string) => R[],
   table: string,
-  schema: { safeParse: (value: unknown) => { success: boolean; data?: unknown } },
+  schema: z.ZodType,
 ): T[] {
   const columns: Record<string, string> = {
     pictures: 'id, src, alt, tag, caption, poster, captions_src AS captionsSrc',
@@ -113,7 +115,26 @@ function collect<T extends { id: string; createdAt: string }>(
   const out: T[] = [];
   for (const row of rows) {
     const parsed = schema.safeParse(row);
-    if (!parsed.success || !parsed.data) continue;
+    if (!parsed.success || parsed.data === undefined) {
+      /*
+       * A row that fails validation here has already been accepted by the write
+       * path, so dropping it silently makes saved content disappear: the
+       * dashboard reports success, the row is in the database, and the public
+       * page and every later dashboard load omit it. That is the worst shape a
+       * bug can have, because the write and the read disagree and neither says
+       * so.
+       *
+       * The usual cause is a stored default colliding with an input schema — an
+       * empty string in a column the schema validates as an email address, for
+       * instance. The row and the reason are logged so it is traceable to a
+       * specific record rather than looking like the row never existed.
+       */
+      console.warn(
+        `[golden-steps] ${table} row ${String(row.id)} failed validation and was ` +
+          `omitted from the response: ${parsed.success ? 'no data' : z.prettifyError(parsed.error)}`,
+      );
+      continue;
+    }
     out.push({ ...(parsed.data as object), id: String(row.id), createdAt: String(row.createdAt) } as T);
   }
   return out;
@@ -402,7 +423,10 @@ export async function addTeamMember(input: TeamMemberInput): Promise<ManagedTeam
       )
       .run(
         id, input.name, input.role, input.bio, input.image, input.imageAlt,
-        input.email, input.order, createdAt,
+        // The schema reports an absent address as `undefined` and the column is
+        // `NOT NULL DEFAULT ''`, so the two are reconciled here rather than
+        // storing a value SQLite would reject.
+        input.email ?? '', input.order, createdAt,
       );
     return { ...input, id, createdAt };
   });

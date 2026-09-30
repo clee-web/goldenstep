@@ -22,7 +22,17 @@ import {
   TextInput,
 } from './ui';
 
-const blank = (): TeamMemberInput => ({
+/**
+ * The shape the form holds while editing.
+ *
+ * Deliberately not `TeamMemberInput`: the schema reports an absent email as
+ * `undefined`, but a text input is controlled and needs a string, and the
+ * dashboard's own draft is built from blank strings. The two are reconciled when
+ * the draft is submitted, where the schema does the normalising.
+ */
+type TeamMemberDraft = Omit<TeamMemberInput, 'email'> & { email: string };
+
+const blank = (): TeamMemberDraft => ({
   name: '',
   role: '',
   bio: '',
@@ -32,13 +42,16 @@ const blank = (): TeamMemberInput => ({
   order: 0,
 });
 
-const toDraft = (member: ManagedTeamMember): TeamMemberInput => ({
+const toDraft = (member: ManagedTeamMember): TeamMemberDraft => ({
   name: member.name,
   role: member.role,
   bio: member.bio,
   image: member.image,
   imageAlt: member.imageAlt,
-  email: member.email,
+  // A member with no address reads back as `undefined`, while a blank form
+  // field is ''. Both mean the same thing to the schema, and normalising here
+  // keeps the text input controlled with a string.
+  email: member.email ?? '',
   order: member.order,
 });
 
@@ -50,7 +63,7 @@ export function TeamManager({
   /** Re-reads managed content from the server after a successful write. */
   refresh: () => Promise<boolean>;
 }) {
-  const editor = useEditor<TeamMemberInput>({
+  const editor = useEditor<TeamMemberDraft>({
     blank,
     onError: (error) =>
       error.error === 'not_found'
@@ -64,7 +77,7 @@ export function TeamManager({
 
   const teamMembers = content.teamMembers;
 
-  const save = async (draft: TeamMemberInput, id: string | null) =>
+  const save = async (draft: TeamMemberDraft, id: string | null) =>
     id ? api.updateTeamMember(id, draft) : api.createTeamMember(draft);
 
   /**

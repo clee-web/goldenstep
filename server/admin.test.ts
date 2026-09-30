@@ -443,6 +443,59 @@ describe('managed content CRUD', () => {
     assert.equal(removed.status, 200);
   });
 
+  /*
+   * A team member with no email address is the ordinary case: the dashboard
+   * marks the field optional, the column defaults to '', and the write succeeds.
+   *
+   * The read path used to validate that stored '' as an email address, fail, and
+   * drop the row — so the save reported success, the row was in the database, and
+   * the record then vanished from the dashboard and the public site with nothing
+   * logged. Every other CRUD test supplied a real address, which is why it went
+   * unnoticed. This asserts the round trip, not the write.
+   */
+  it('keeps a team member that was saved without an email address', async () => {
+    const created = await send('/api/admin/team', 'POST', {
+      name: 'Grace Achieng',
+      role: 'Community mobiliser',
+      bio: 'Has walked door to door since the programme started in Nyalenda A.',
+      email: '',
+      order: 0,
+    });
+    assert.equal(created.status, 201);
+
+    const listed = await json<ContentBody>(await send('/api/admin/content', 'GET'));
+    assert.equal(listed.content.teamMembers.length, 1, 'the saved member must still be readable');
+    assert.equal(listed.content.teamMembers[0]?.name, 'Grace Achieng');
+
+    // And on the public endpoint, which is what renders the page.
+    const published = await json<ContentBody>(
+      await fetch(`${baseUrl}/api/content`),
+    );
+    assert.equal(published.content.teamMembers.length, 1);
+
+    await send(`/api/admin/team/${listed.content.teamMembers[0]?.id}`, 'DELETE');
+  });
+
+  it('still refuses a malformed email address', async () => {
+    const res = await send('/api/admin/team', 'POST', {
+      name: 'Bad Address',
+      role: 'Volunteer',
+      bio: 'This record carries an address that is not an email address at all.',
+      email: 'not-an-email',
+    });
+    assert.equal(res.status, 422);
+
+    /*
+     * The field-level text matters, not just the status: it is what the operator
+     * sees under the input. Admitting '' was done with a refine rather than a
+     * union with `z.literal('')` precisely because a union reports
+     * `invalid_union` and throws the specific messages away, leaving the
+     * dashboard with an error it cannot explain.
+     */
+    const body = await json<ErrorBody>(res);
+    assert.equal(body.fields?.email, 'Please enter a valid email address.');
+  });
+
   it('creates, reads, updates and deletes a testimonial', async () => {
     const created = await send('/api/admin/testimonials', 'POST', {
       name: 'Achieng Odhiambo',

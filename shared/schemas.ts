@@ -293,7 +293,33 @@ export const teamMemberInputSchema = z
       .max(500, 'Bio must be 500 characters or fewer.'),
     image: optionalImageSrcSchema.optional().default(''),
     imageAlt: z.string().trim().max(200).optional().default(''),
-    email: z.string().trim().email('Please enter a valid email address.').max(160).optional().default(''),
+    /*
+     * An absent address and an empty one mean the same thing here, and both the
+     * column and the dashboard's text input represent it as ''.
+     *
+     * Validating '' as an email address rejects it, and that rejection is what
+     * made saved content disappear: the row was written, then dropped on the
+     * next read because the stored empty string failed validation, so the save
+     * reported success while the record vanished from the dashboard and the
+     * public site. The check therefore admits '' explicitly and normalises it
+     * to undefined afterwards, so the column and the schema agree on what "no
+     * address" looks like.
+     *
+     * This is a refine rather than a union with `z.literal('')` on purpose: a
+     * union reports `invalid_union` and discards the individual messages, which
+     * would replace this field's helpful text with a generic failure in the
+     * dashboard.
+     */
+    email: z
+      .string()
+      .trim()
+      .max(160)
+      .refine(
+        (value) => value === '' || z.email().safeParse(value).success,
+        'Please enter a valid email address.',
+      )
+      .transform((value) => (value === '' ? undefined : value))
+      .optional(),
     order: z.number().int().min(0).max(100).optional().default(0),
   })
   .superRefine(hasAltTextForImage);
