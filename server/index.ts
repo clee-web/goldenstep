@@ -263,6 +263,60 @@ function reportStorage(): void {
 }
 
 /**
+ * How many routes a Router actually ended up with.
+ *
+ * A Router is built by calling `.get()` and `.post()` on it at module scope, so
+ * a module that fails to finish evaluating — or a stale copy of it left in a
+ * release directory next to a current one — yields a Router with no routes at
+ * all. Nothing throws. `app.use('/api', emptyRouter)` mounts cleanly, matches
+ * nothing, and every request under `/api` falls through to the SPA fallback.
+ *
+ * That failure is invisible from outside, which is the problem: the site looks
+ * fine, the status codes look fine, and the only symptom is a dashboard that
+ * cannot read its own data. Printing the counts at startup turns "the API is
+ * mysteriously missing" into one line in the log.
+ *
+ * Layers created by `router.get(path, …)` carry a `route`; layers created by
+ * `router.use(…)` do not. Counting the former counts the endpoints.
+ */
+function countRoutes(router: unknown): number {
+  const stack = (router as { stack?: unknown }).stack;
+  if (!Array.isArray(stack)) return -1;
+  return stack.filter((layer) => (layer as { route?: unknown }).route).length;
+}
+
+function reportRoutes(): void {
+  const counts = { api: countRoutes(api), admin: countRoutes(admin) };
+
+  console.log(
+    `[golden-steps] routes: ${counts.api} public, ${counts.admin} admin ` +
+      `(entry ${here}/index.js, site ${DIST_DIR})`,
+  );
+
+  if (counts.api === 0 || counts.admin === 0) {
+    console.warn(
+      [
+        '',
+        '='.repeat(72),
+        '  AN API ROUTER HAS NO ROUTES',
+        '='.repeat(72),
+        `  public: ${counts.api}   admin: ${counts.admin}`,
+        '',
+        '  Every /api request will fall through to the web page, so the site will',
+        '  look normal while the dashboard cannot load or save anything.',
+        '',
+        '  This means the release directory holds a mix of builds: a current',
+        '  index.js beside an older or half-extracted routes.js / admin-routes.js.',
+        '  Delete everything in the application root, upload the release again,',
+        '  and extract it so that app.js sits directly in that root.',
+        '='.repeat(72),
+        '',
+      ].join('\n'),
+    );
+  }
+}
+
+/**
  * Starts the HTTP listener and installs shutdown handling.
  *
  * Exported, not just called under `isDirectRun`, because `app.js` is the entry
@@ -287,6 +341,7 @@ export function start(): void {
     } else {
       console.log('[golden-steps] no build found — run the Vite dev server for the site');
     }
+    reportRoutes();
     reportStorage();
   });
 
