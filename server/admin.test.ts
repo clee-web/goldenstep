@@ -43,7 +43,16 @@ interface ContentBody {
     pictures: { id: string; src: string; alt: string; tag: string; caption: string }[];
     projects: { id: string; title: string; date: string; programme: string }[];
     activities: { id: string; title: string; date: string }[];
-    teamMembers: { id: string; name: string }[];
+    teamMembers: {
+      id: string;
+      name: string;
+      role: string;
+      bio: string;
+      email?: string;
+      image: string;
+      imageAlt: string;
+      order: number;
+    }[];
     testimonials: { id: string; name: string; role: string; testimonial: string }[];
     policies: { id: string; title: string; file: string; category: string; date: string }[];
     programmes: Record<string, {
@@ -494,6 +503,98 @@ describe('managed content CRUD', () => {
      */
     const body = await json<ErrorBody>(res);
     assert.equal(body.fields?.email, 'Please enter a valid email address.');
+  });
+
+  /*
+   * The team collection is the one the dashboard used to have no CRUD coverage
+   * for, and it carried two defects that only a round trip could find: the
+   * update statement listed eight placeholders and passed seven values, and the
+   * stored empty email failed its own schema on read. Both were invisible
+   * because nothing ever created, updated, listed and deleted a team member
+   * through the API in one test.
+   *
+   * This is that test. Every field is asserted after the update, because a
+   * statement whose arguments are shifted can report success while writing the
+   * wrong values into the wrong columns.
+   */
+  it('creates, reads, updates and deletes a team member', async () => {
+    const created = await send('/api/admin/team', 'POST', {
+      name: 'Grace Achieng',
+      role: 'Community mobiliser',
+      bio: 'Has walked door to door since the programme started in Nyalenda A.',
+      image: '/assets/team.jpg',
+      imageAlt: 'Grace standing outside a community hall',
+      email: 'grace@example.org',
+      order: 1,
+    });
+    assert.equal(created.status, 201);
+
+    const createdBody = await json<{ ok: boolean; teamMember: { id: string } }>(created);
+    const id = createdBody.teamMember.id;
+
+    const listed = await json<ContentBody>(await send('/api/admin/content', 'GET'));
+    assert.equal(listed.content.teamMembers.length, 1);
+
+    const updated = await send(`/api/admin/team/${id}`, 'PUT', {
+      name: 'Grace Achieng Odhiambo',
+      role: 'Senior community mobiliser',
+      bio: 'Now leads the door-to-door team across the whole sub-county.',
+      image: '/assets/team.jpg',
+      imageAlt: 'Grace standing outside a community hall',
+      email: 'grace.odhiambo@example.org',
+      order: 0,
+    });
+    assert.equal(updated.status, 200);
+
+    // Every field, read back through the public endpoint the site actually uses.
+    const afterUpdate = await json<ContentBody>(await fetch(`${baseUrl}/api/content`));
+    assert.equal(afterUpdate.content.teamMembers.length, 1);
+    assert.deepEqual(
+      {
+        name: afterUpdate.content.teamMembers[0]?.name,
+        role: afterUpdate.content.teamMembers[0]?.role,
+        bio: afterUpdate.content.teamMembers[0]?.bio,
+        email: afterUpdate.content.teamMembers[0]?.email,
+        image: afterUpdate.content.teamMembers[0]?.image,
+        imageAlt: afterUpdate.content.teamMembers[0]?.imageAlt,
+        order: afterUpdate.content.teamMembers[0]?.order,
+      },
+      {
+        name: 'Grace Achieng Odhiambo',
+        role: 'Senior community mobiliser',
+        bio: 'Now leads the door-to-door team across the whole sub-county.',
+        email: 'grace.odhiambo@example.org',
+        image: '/assets/team.jpg',
+        imageAlt: 'Grace standing outside a community hall',
+        order: 0,
+      },
+    );
+
+    // An update that omits the address must clear it rather than corrupt a column.
+    const cleared = await send(`/api/admin/team/${id}`, 'PUT', {
+      name: 'Grace Achieng Odhiambo',
+      role: 'Senior community mobiliser',
+      bio: 'Now leads the door-to-door team across the whole sub-county.',
+      order: 0,
+    });
+    assert.equal(cleared.status, 200);
+    const afterClear = await json<ContentBody>(await fetch(`${baseUrl}/api/content`));
+    assert.equal(afterClear.content.teamMembers[0]?.email, undefined);
+    assert.equal(afterClear.content.teamMembers[0]?.name, 'Grace Achieng Odhiambo');
+
+    const removed = await send(`/api/admin/team/${id}`, 'DELETE');
+    assert.equal(removed.status, 200);
+    const afterDelete = await json<ContentBody>(await fetch(`${baseUrl}/api/content`));
+    assert.deepEqual(afterDelete.content.teamMembers, []);
+  });
+
+  it('404s when updating a team member that does not exist', async () => {
+    const res = await send('/api/admin/team/does-not-exist', 'PUT', {
+      name: 'Ghost member',
+      role: 'Volunteer',
+      bio: 'This record was never created and must not appear anywhere.',
+    });
+    assert.equal(res.status, 404);
   });
 
   it('creates, reads, updates and deletes a testimonial', async () => {

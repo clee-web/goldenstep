@@ -449,7 +449,11 @@ export async function updateTeamMember(
       )
       .run(
         input.name, input.role, input.bio, input.image, input.imageAlt,
-        input.order, id,
+        // Must mirror the SET list exactly: eight placeholders, eight values.
+        // An omitted argument here binds NULL to `email` and then shifts the id
+        // into `sort_order`, so `WHERE id = NULL` matches nothing and the update
+        // reports success while changing no rows.
+        input.email ?? '', input.order, id,
       );
     return { ...input, id, createdAt: existing.created_at };
   });

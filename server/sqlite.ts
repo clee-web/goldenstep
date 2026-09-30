@@ -85,14 +85,76 @@ const plain = (row: unknown): unknown => (row === undefined ? undefined : { ...(
  */
 type RawStatement = Pick<StatementSync, 'run' | 'get' | 'all'>;
 
-/** Adapts one `node:sqlite` statement to the shape above. */
-function wrap(statement: RawStatement): Statement {
+/**
+ * Counts the `?` placeholders in a statement.
+ *
+ * `?` inside a string literal is data rather than a placeholder — an uploaded
+ * path can legitimately contain one — so quoted spans are skipped. A doubled
+ * quote is an escaped quote, not the end of the literal, so it does not close
+ * the span. Line comments are not handled: no prepared statement in this
+ * codebase contains one, since the commented schema goes through `exec()`, which
+ * takes no parameters.
+ */
+export function countPlaceholders(sql: string): number {
+  let count = 0;
+  let inString = false;
+  for (let i = 0; i < sql.length; i += 1) {
+    const char = sql[i];
+    if (char === "'") {
+      if (inString && sql[i + 1] === "'") {
+        i += 1;
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+    if (char === '?' && !inString) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Adapts one `node:sqlite` statement to the shape above, checking the number of
+ * parameters against the statement first.
+ *
+ * This guard is not optional politeness. `node:sqlite` throws when given *too
+ * many* parameters but silently accepts *too few*, binding NULL to the
+ * remainder — so an `UPDATE ... WHERE id = ?` called without its id matches
+ * nothing, reports success, and changes no rows. `better-sqlite3`, which this
+ * replaced, threw in both cases, so without the check the same code went from a
+ * loud 500 to silent data loss the moment the driver changed.
+ *
+ * A wrong count that still matches in number is not detectable here — a
+ * statement can bind the right values in the wrong order — which is why the
+ * update paths are covered by round-trip tests rather than trusted.
+ */
+function wrap(statement: RawStatement, sql: string): Statement {
+  const expected = countPlaceholders(sql);
+  const check = (params: SQLInputValue[]): void => {
+    if (params.length !== expected) {
+      throw new Error(
+        `Statement expects ${expected} parameter${expected === 1 ? '' : 's'} but ` +
+          `received ${params.length}: ${sql.replace(/\s+/g, ' ').trim()}`,
+      );
+    }
+  };
+
   return {
-    run: (...params) =>
-      statement.run(...params) as { changes: number | bigint; lastInsertRowid: number | bigint },
-    get: <T,>(...params: SQLInputValue[]) =>
-      plain(statement.get(...params)) as T | undefined,
-    all: <T,>(...params: SQLInputValue[]) => statement.all(...params).map(plain) as T[],
+    run: (...params) => {
+      check(params);
+      return statement.run(...params) as {
+        changes: number | bigint;
+        lastInsertRowid: number | bigint;
+      };
+    },
+    get: <T,>(...params: SQLInputValue[]) => {
+      check(params);
+      return plain(statement.get(...params)) as T | undefined;
+    },
+    all: <T,>(...params: SQLInputValue[]) => {
+      check(params);
+      return statement.all(...params).map(plain) as T[];
+    },
   };
 }
 
@@ -102,7 +164,7 @@ export function openDatabase(file: string, options: DatabaseSyncOptions = {}): D
   const handle = new DatabaseSync(file, options);
 
   const db: Db = {
-    prepare: (sql) => wrap(handle.prepare(sql)),
+    prepare: (sql) => wrap(handle.prepare(sql), sql),
     exec: (sql) => handle.exec(sql),
     /*
      * `better-sqlite3` had a dedicated `pragma()` method. The built-in has only

@@ -7,12 +7,53 @@ import assert from 'node:assert/strict';
 const dir = path.join(process.env.TMPDIR ?? process.env.TEMP ?? '.', `gs-driver-${process.pid}`);
 process.env.DATA_DIR = dir;
 
-const { db, closeDb, transact, openDatabase, databaseFile } = await import('./sqlite.ts');
+const { db, closeDb, transact, openDatabase, databaseFile, countPlaceholders } =
+  await import('./sqlite.ts');
 
 rmSync(dir, { recursive: true, force: true });
 mkdirSync(dir, { recursive: true });
 
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+
+/*
+ * The parameter-count guard.
+ *
+ * `node:sqlite` accepts too few parameters and binds NULL to the rest, where
+ * `better-sqlite3` threw. That difference turned a broken UPDATE into a silent
+ * no-op the moment the driver changed, so the shim checks the count itself.
+ * These assertions pin the behaviour that makes the guard worth having.
+ */
+
+// Placeholders inside a string literal are data, not placeholders.
+assert.equal(countPlaceholders('SELECT 1'), 0);
+assert.equal(countPlaceholders('SELECT ?, ?'), 2);
+assert.equal(countPlaceholders("SELECT ? WHERE a = 'lit?eral'"), 1);
+assert.equal(countPlaceholders("SELECT ? WHERE a = 'it''s a ?'"), 1);
+
+db()
+  .prepare('INSERT INTO team_members (id, name, role, bio, created_at) VALUES (?, ?, ?, ?, ?)')
+  .run('g0', 'Seed', 'Member', '', 'now');
+{
+  const statement = db().prepare('UPDATE team_members SET role = ? WHERE id = ?');
+
+  // Too few: the driver would silently bind NULL and match nothing.
+  assert.throws(
+    () => statement.run('Renamed'),
+    /expects 2 parameters but received 1: UPDATE team_members SET role = \? WHERE id = \?/,
+  );
+  assert.throws(() => statement.run(), /received 0/);
+
+  // Too many: the driver throws, but with a message about a column index.
+  assert.throws(() => statement.run('a', 'g0', 'extra'), /received 3/);
+
+  // And the real call still works, so the guard is not simply rejecting things.
+  statement.run('Senior member', 'g0');
+  assert.equal(
+    db().prepare('SELECT role FROM team_members WHERE id = ?').get('g0')?.role,
+    'Senior member',
+  );
+  db().prepare('DELETE FROM team_members WHERE id = ?').run('g0');
+}
 
 const insertMember = (id: string, name: string, role: string) =>
   db()
@@ -86,4 +127,7 @@ const verify = openDatabase(snapshot, { readOnly: true });
 assert.equal((verify.prepare('SELECT COUNT(*) AS c FROM team_members').get() as { c: number }).c, 1);
 verify.close();
 
-console.log('node:sqlite shim OK — transactions, rollback, null-prototype rows, null binds, VACUUM INTO');
+console.log(
+  'node:sqlite shim OK — parameter-count guard, transactions, rollback, ' +
+    'null-prototype rows, null binds, VACUUM INTO',
+);
