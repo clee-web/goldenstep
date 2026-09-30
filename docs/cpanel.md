@@ -199,7 +199,12 @@ cd ~/nodejs/goldensteps
 npm run backup -- --out /home/youruser/backups
 ```
 
-This writes `website.db` plus a copy of `uploads/`. To restore:
+Run this over SSH, **not** through cPanel's **Run NPM Script** button. The backup
+finishes on its own so it will not normally wedge anything, but it is one long
+`npm` invocation in the same directory the Selector locks, and SSH is the safer
+place for it. See "Can't acquire lock for app" below for what happens if it does.
+
+To restore:
 
 ```bash
 npm run restore -- /home/youruser/backups/2026-09-30T12-00-00
@@ -212,10 +217,68 @@ recent writes, or is missing whole tables. The backup script uses SQLite's own
 consistent-snapshot mechanism, so it is always correct. Copying `uploads/` is
 safe but still required — the policy PDFs are not in the database.
 
+## "Can't acquire lock for app: %(app)s"
+
+This one is worth separating out, because it looks like an application error and
+is not. It comes from CloudLinux's Node.js Selector, and it means **the app never
+started** — nothing in this project ran, and no amount of changing the code will
+clear it.
+
+`Setup Node.js App` writes a `.lock` file into the application root every time it
+acts on the app — start, stop, restart, or **Run NPM Install**. The lock guarantees
+only one operation touches the app at a time. The usual cause is a script started
+through **Run JS Script / Run NPM Script**: unlike start and stop, that has no Stop
+button, so the process keeps running in the background holding the lock forever.
+Every subsequent action fails with this message.
+
+### Fix
+
+Remove the stale lock file in the application root:
+
+```bash
+cd ~/nodejs/goldensteps
+ls -la | grep lock
+rm -f .lock
+```
+
+Then press **Restart** in cPanel.
+
+If the error returns immediately, something is relaunching the process. Check for
+a cron job or script that starts the app outside cPanel:
+
+```bash
+crontab -l
+```
+
+If a process is genuinely still running and holding the lock, and you have SSH
+access, find and stop it:
+
+```bash
+lsof -u "$(whoami)" | grep lock
+kill -9 <pid>
+```
+
+On shared hosting without root, that last step is not available to you — open a
+ticket with Safaricom and ask them to clear the locked process for your
+application. They can do it in seconds.
+
+### Do not run long-lived scripts through the Node.js Selector UI
+
+This is what causes the lock in the first place, and it applies directly to the
+`npm run backup` command above. It exits on its own, so it is usually fine, but a
+script that *never exits* started through **Run NPM Script** will wedge the app
+permanently and you will not be able to restart it from cPanel.
+
+- **Short-lived, exits by itself** (backup, migrate) — acceptable, but prefer SSH.
+- **Anything long-lived** — do not use the Selector UI. Shared hosting has no
+  process manager, and this app does not need one: it is a single Express process
+  that the Selector already supervises.
+
 ## Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
+| `Can't acquire lock for app` | Stale `.lock` from a script started via Run NPM Script. See above. Nothing in the app ran. |
 | Blank site, or 404 on `/admin` | Not built, or `app.js` missing from the application root. |
 | `/admin` 404 but the site works | The build is stale. Re-run `npm run build` and upload `dist-server/`. |
 | Cannot sign in | Not on HTTPS, so the `Secure` cookie is dropped. |
