@@ -131,6 +131,11 @@ clone the repository there and use **Deploy HEAD Commit** to run the tasks.
 the first task, which is what `.cpanel.yml` does. If you changed the application
 root away from `nodejsapp`, edit the first line of `.cpanel.yml` to match.
 
+`scripts/cpanel-deploy.sh` handles both cPanel layouts on its own. Application
+Manager clones the repository straight into the application root, so there is
+nothing to copy; Git™ Version Control clones it elsewhere, so the script copies
+the source across. Either way the build ends up in the right place.
+
 The deploy log ends with the content directory it is using. Read that line. If it
 says `NOT SET - content will be lost on redeploy`, stop and set `DATA_DIR`.
 

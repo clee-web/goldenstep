@@ -100,32 +100,56 @@ if (!ok) {
 # DATA_DIR is not copied, and is not touched. It lives outside this directory by
 # requirement, which is the whole reason content survives a redeploy.
 # ---------------------------------------------------------------------------
+# Resolve both to real paths so the comparison below is not fooled by a
+# trailing slash or by `nodejsapp` versus `./nodejsapp`.
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f "$SOURCE_DIR/package.json" ] || fail "could not locate the source tree (looked in $SOURCE_DIR)"
 
-mkdir -p "$DEPLOYPATH/tmp" || fail "could not create $DEPLOYPATH/tmp. Is the Node.js application's application root set correctly in cPanel?"
+mkdir -p "$DEPLOYPATH" || fail "could not create $DEPLOYPATH. Is the Node.js application's application root set correctly in cPanel?"
+DEPLOYPATH="$(cd "$DEPLOYPATH" && pwd)"
 
-log "copying source from $SOURCE_DIR to $DEPLOYPATH"
+mkdir -p "$DEPLOYPATH/tmp" || fail "could not create $DEPLOYPATH/tmp."
 
-# Directories. src/ and public/ are the site's source and static assets,
-# server/ and shared/ are the compiled server, db/schema.sql is the schema that
-# the server reads at startup, admin/ and scripts/ are needed to build.
-for dir in admin db scripts server shared src public; do
-  [ -d "$SOURCE_DIR/$dir" ] || fail "$dir/ is missing from the source tree. A partial copy cannot build."
-  cp -R "$SOURCE_DIR/$dir" "$DEPLOYPATH/" || fail "could not copy $dir/"
-done
+# ---------------------------------------------------------------------------
+# Copy the source into the app root — but only when it is somewhere else.
+#
+# cPanel has two deploy flows and they put the repository in different places:
+#
+#   * Application Manager / "Setup Node.js App" clones the repository straight
+#     into the application root, so the source is ALREADY where it must be.
+#   * Git Version Control clones it elsewhere, and the tasks are responsible for
+#     copying files out to the production directory.
+#
+# Copying unconditionally is not merely wasteful in the first case: `cp -R src .`
+# where source and destination are the same directory fails outright with
+# "cannot copy a directory into itself", which would fail every deploy on the
+# more common of the two setups.
+# ---------------------------------------------------------------------------
+if [ "$SOURCE_DIR" = "$DEPLOYPATH" ]; then
+  log "source is already in the app root; nothing to copy"
+else
+  log "copying source from $SOURCE_DIR to $DEPLOYPATH"
 
-# Files, as globs rather than a fixed list. tsconfig*.json in particular must be
-# a glob: the root tsconfig.json is a project-references file pointing at
-# tsconfig.app.json and tsconfig.node.json, and listing the three by hand is how
-# tsconfig.node.json went missing once and broke the build on the host while
-# working perfectly on the developer's machine.
-for pattern in package.json package-lock.json app.js index.html vite.config.ts eslint.config.js .env.example 'tsconfig*.json'; do
-  for file in "$SOURCE_DIR"/$pattern; do
-    [ -f "$file" ] || continue
-    cp "$file" "$DEPLOYPATH/" || fail "could not copy $(basename "$file")"
+  # Directories. src/ and public/ are the site's source and static assets,
+  # server/ and shared/ are the compiled server, db/schema.sql is the schema the
+  # server reads at startup, admin/ and scripts/ are needed to build.
+  for dir in admin db scripts server shared src public; do
+    [ -d "$SOURCE_DIR/$dir" ] || fail "$dir/ is missing from the source tree. A partial copy cannot build."
+    cp -R "$SOURCE_DIR/$dir" "$DEPLOYPATH/" || fail "could not copy $dir/"
   done
-done
+
+  # Files, as globs rather than a fixed list. tsconfig*.json in particular must
+  # be a glob: the root tsconfig.json is a project-references file pointing at
+  # tsconfig.app.json and tsconfig.node.json, and listing the three by hand is
+  # how tsconfig.node.json went missing once and broke the build on the host
+  # while working perfectly on the developer's machine.
+  for pattern in package.json package-lock.json app.js index.html vite.config.ts eslint.config.js .env.example 'tsconfig*.json'; do
+    for file in "$SOURCE_DIR"/$pattern; do
+      [ -f "$file" ] || continue
+      cp "$file" "$DEPLOYPATH/" || fail "could not copy $(basename "$file")"
+    done
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # Install and build.
