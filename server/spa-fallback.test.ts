@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
@@ -19,6 +19,8 @@ const hasBuild = existsSync(path.join(DIST_DIR, 'index.html'));
 const app = createApp({ enforceRateLimit: false });
 let server: ReturnType<typeof app.listen>;
 let baseUrl: string;
+
+const publicHtml = () => readFileSync(path.join(DIST_DIR, 'index.html'), 'utf8');
 
 interface ErrorBody {
   ok: boolean;
@@ -94,6 +96,40 @@ describe('an unmatched API path is never answered with the web page', () => {
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type') ?? '', /application\/json/);
   });
+
+  /*
+   * The dashboard is a separate document with its own bundle, and the address
+   * an operator actually types is /admin/ — not /admin/index.html. Because the
+   * static handler runs with `index: false`, /admin/ used to resolve to no file
+   * and fall through to the SPA fallback, which answered it with the *public*
+   * index.html. The operator landed on the marketing site with /admin/ in the
+   * address bar, and the page then requested /api/admin/session, producing a 404
+   * for a request they never made. Asserting on the document itself, rather
+   * than the status code, is what makes the difference visible.
+   */
+  for (const target of ['/admin', '/admin/']) {
+    it(`serves the dashboard document at ${target}`, async (t) => {
+      if (!hasBuild) {
+        t.skip('no build output present');
+        return;
+      }
+      // `/admin` without the trailing slash is redirected by express.static before
+      // the explicit handler runs, which is the correct outcome; following it
+      // must still reach the dashboard.
+      const res = await fetch(`${baseUrl}${target}`, { redirect: 'follow' });
+      assert.equal(res.status, 200);
+      assert.equal(new URL(res.url).pathname, '/admin/');
+
+      const dashboard = await res.text();
+      const publicSite = publicHtml();
+      assert.notEqual(
+        dashboard,
+        publicSite,
+        `${target} served the public site; the dashboard is a different document`,
+      );
+      assert.match(dashboard, /Dashboard/);
+    });
+  }
 
   it('sets the security headers on a 404', async () => {
     const res = await fetch(`${baseUrl}/api/does-not-exist`);

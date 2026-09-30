@@ -111,6 +111,31 @@ export function createApp({ enforceRateLimit = RATE_LIMIT_ENFORCED } = {}) {
     );
 
     const indexHtml = path.join(DIST_DIR, 'index.html');
+    const adminIndexHtml = path.join(DIST_DIR, 'admin', 'index.html');
+
+    /*
+     * The dashboard lives in its own HTML document with its own bundle, and it
+     * is a separate entry point — not a client-side route of the public site.
+     *
+     * It has to be named explicitly, because `express.static` above runs with
+     * `index: false` so that a directory never resolves to some unexpected
+     * file. The side effect is that `/admin/` finds no index to serve, falls
+     * through to the SPA fallback below, and is answered with the *public*
+     * `index.html`. The visitor then lands on the marketing site while the
+     * address bar says `/admin/`, and that page goes on to request
+     * `/api/admin/session`, which needs a session the visitor does not have.
+     *
+     * The failure looks like a broken API — a 404 in the console for a request
+     * nobody made — while the actual fault is one missing branch here.
+     */
+    if (existsSync(adminIndexHtml)) {
+      const serveAdmin = (_req: Request, res: Response) => {
+        res.set('Cache-Control', 'no-cache');
+        res.sendFile(adminIndexHtml);
+      };
+      app.get('/admin', serveAdmin);
+      app.get('/admin/', serveAdmin);
+    }
 
     /*
      * The SPA fallback must never answer an API or upload path.
