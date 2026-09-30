@@ -7,36 +7,41 @@
  * that has to be typed into a dashboard short and conventional, and gives one
  * obvious place to change if the compiled path ever moves.
  *
- * It is a dynamic import rather than a static one so that a missing or
- * unbuilt `dist-server/` produces a clear message here instead of a bare
- * module-resolution error from three frames down.
+ * The import MUST stay static, and there must be no top-level `await` in this
+ * file or in anything it statically imports. See the long comment below.
  */
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-
-const entry = path.resolve(import.meta.dirname, 'dist-server', 'server', 'index.js');
-
-if (!existsSync(entry)) {
-  console.error(
-    'The application has not been built.\n' +
-      `Expected ${entry}.\n\n` +
-      'Run `npm ci && npm run build` before uploading, then upload the `dist-server/`\n' +
-      'directory along with `node_modules`.',
-  );
-  process.exit(1);
-}
+import { start } from './dist-server/server/index.js';
 
 /*
- * `pathToFileURL` rather than the bare path. A dynamic import resolves its
- * argument as a URL, so an absolute filesystem path only works on POSIX; on
- * Windows `C:\...` is read as a URL with the unsupported scheme `c:` and the
- * process dies with ERR_UNSUPPORTED_ESM_URL_SCHEME. Converting first is correct
- * on every platform.
+ * Why a static import, and why no top-level await. Passenger does not run this
+ * file; it `require()`s it. On Node 22.12+ and 24 that works for ESM, but
+ * `require()` cannot load an ESM graph that contains a top-level await — the
+ * graph would have to suspend, and there is nowhere to suspend to. Node throws
+ *
+ *   Error [ERR_REQUIRE_ASYNC_MODULE]: require() cannot be used on an ESM graph
+ *   with top-level await. Use import() instead.
+ *
+ * which surfaces to the visitor as a bare 500 ("Web application could not be
+ * started by the Phusion Passenger application server") with the real cause
+ * only in the application log. It is an easy mistake to reintroduce: the
+ * natural way to write this file is a dynamic `await import()` so that a
+ * missing `dist-server/` produces a friendly message, and that is precisely the
+ * form that Passenger cannot load.
+ *
+ * So the import is static, and the friendliness is bought back differently: a
+ * missing `dist-server/` raises ERR_MODULE_NOT_FOUND naming the exact path it
+ * looked for, which is the more useful error of the two, and the build scripts
+ * (`scripts/cpanel-deploy.sh`, `npm run build`) and `START-HERE.md` check for
+ * the artefact before anything is uploaded.
+ *
+ * A static import also removes a real startup race. Passenger starts proxying
+ * to this process as soon as loading finishes, so with a dynamic import the
+ * server may not have bound its port yet and the first request after every
+ * restart is refused. Evaluating the entry as part of loading means
+ * `start()` — which is synchronous — has bound the port before this file
+ * finishes loading.
  *
  * `start()` is called explicitly. The server module only listens by itself when
- * it is the process entry point, which it is not here — this file is — so an
- * import alone would return immediately with nothing listening.
+ * it is the process entry point, which it is not here — this file is.
  */
-const { start } = await import(pathToFileURL(entry).href);
 start();

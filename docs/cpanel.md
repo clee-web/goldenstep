@@ -5,9 +5,57 @@ Passenger. It is different from the Docker deployment in the README, and the
 differences matter — several of the errors seen on these hosts come from
 following the Docker instructions instead.
 
-## The three things that cause almost every problem
+## The four things that cause almost every problem
 
-### 1. The server is compiled JavaScript, not TypeScript
+### 1. The startup file cannot use top-level `await`
+
+This one produces a **blank 500 on every route** with nothing useful in the
+browser, and it is the single most common way this project fails to come up on
+Passenger. It is worth reading even if nothing else is wrong.
+
+Passenger does not execute `app.js`. It `require()`s it, from a CommonJS helper
+of its own. Modern Node can `require()` an ES module, but **not** one whose graph
+contains a top-level `await` — such a graph would have to suspend, and there is
+nowhere to suspend to. The result is:
+
+```
+Error [ERR_REQUIRE_ASYNC_MODULE]: require() cannot be used on an ESM graph
+with top-level await. Use import() instead.
+```
+
+and the visitor sees only *"Web application could not be started by the Phusion
+Passenger application server"*. The real cause is in the application log.
+
+So `app.js` must use a **static** import, with no `await` anywhere in the chain:
+
+```js
+import { start } from './dist-server/server/index.js';
+start();
+```
+
+The tempting alternative — a dynamic `await import()`, so that a missing
+`dist-server/` produces a friendly message — is exactly the form Passenger cannot
+load. Do not "improve" `app.js` into one. A missing build instead raises
+`ERR_MODULE_NOT_FOUND` naming the exact path it looked for, and
+`scripts/cpanel-deploy.sh` checks for the artefact before uploading anything.
+
+A static import has a second benefit: Passenger begins proxying to the process as
+soon as loading finishes, so a dynamic import leaves a window in which the port
+is not yet bound and the first request after every restart is refused. Loading
+the entry as part of loading means the listener is up before the first request.
+
+To confirm the startup file is loadable the way Passenger loads it, from a
+CommonJS file **outside** the application directory:
+
+```bash
+cd ~/nodejs/goldensteps
+echo 'require(process.argv[2])' > /tmp/loader.cjs
+node /tmp/loader.cjs "$PWD/app.js"
+```
+
+The absence of `ERR_REQUIRE_ASYNC_MODULE` is the pass condition.
+
+### 2. The server is compiled JavaScript, not TypeScript
 
 `server/index.ts` is **never run directly in production**. `npm run build`
 compiles it to `dist-server/server/index.js`.
@@ -20,7 +68,7 @@ compiled output runs on Node 18 and later.
 So there is no `tsx`, no type stripping, and nothing TypeScript-related at
 runtime. If a startup command mentions `tsx` or a `.ts` file, it is wrong.
 
-### 2. `DATA_DIR` must point outside the application directory
+### 3. `DATA_DIR` must point outside the application directory
 
 The database and every uploaded file live in `DATA_DIR`. If it sits inside the
 application directory, **redeploying by replacing that directory deletes all
@@ -42,7 +90,7 @@ The application checks this at startup and prints a warning to the error log if
 storage. **Read the error log after the first deploy** — those two warnings
 explain most "I lost my data" reports.
 
-### 3. The Node.js version decides whether `npm install` works at all
+### 4. The Node.js version decides whether `npm install` works at all
 
 `better-sqlite3` is a native module — compiled C++, not JavaScript. Shared hosts
 do not have a C++ compiler, so `npm ci` has to download a **prebuilt binary**
@@ -55,13 +103,20 @@ publishes none at all — which is why this dependency is pinned to `~12.9.0`
 rather than tracking latest. `12.9.1` appears to exist as a GitHub release but
 was never published to npm, so `~12.9.0` is the highest safe pin.
 
-**Use Node 20 or 22 in cPanel.** Verified on Linux with no compiler present:
-Node 22 + `better-sqlite3@12.9.0` installs from a prebuild and runs; Node 22 +
-`better-sqlite3@13.0.3` tries to compile and fails.
+**Use Node 20, 22 or 24 in cPanel — not 18.** Node 18 has no prebuild for
+`better-sqlite3` in any published line, so an install there always falls through
+to `node-gyp` and always fails.
 
-Note the interaction with the point above: the *compiled server* runs on Node 18+
-, but the *dependency install* needs a Node version with a prebuild. Node 20 and
-22 satisfy both.
+Verified on Linux x86_64 with no compiler present (`make` and `g++` absent):
+Node 22 and Node 24 both install `better-sqlite3@12.9.0` from a prebuild with
+zero compile attempts and load it; `13.0.3` tries to compile and fails. A binary
+built for one Node major version will not load on another, so **the release must
+be built with the same Node version the host runs** — that is why the single-folder
+release is built for one specific version rather than "whatever is installed".
+
+Note the interaction with point 2: the *compiled server* runs on Node 18+, but the
+*dependency install* needs a version with a prebuild. Node 20, 22 and 24 satisfy
+both.
 
 ## Step by step
 
@@ -71,14 +126,14 @@ In cPanel → **Setup Node.js App**:
 
 | Field | Value |
 | --- | --- |
-| Node.js version | **20 or 22** (see note below — 18 can break dependency installation) |
+| Node.js version | **20, 22 or 24** (see note below — 18 cannot install dependencies) |
 | Application mode | Production |
 | Application root | `nodejs/goldensteps` (or whatever you choose) |
 | Application URL | your domain or subdomain |
 | Application startup file | `app.js` |
 
-`app.js` is a thin wrapper that starts `dist-server/server/index.js`. It also
-fails with a clear message if you have not uploaded a build.
+`app.js` is a thin wrapper that starts `dist-server/server/index.js`. It must keep
+its static import and must not gain a top-level `await` — see point 1 above.
 
 ### 2. Environment variables
 
@@ -297,10 +352,47 @@ permanently and you will not be able to restart it from cPanel.
   process manager, and this app does not need one: it is a single Express process
   that the Selector already supervises.
 
+## A stale static copy in `public_html` shadows the whole app
+
+CloudLinux serves a real file from `public_html` **in preference to** handing the
+request to Passenger, and `PassengerBaseURI "/"` does not change that. So if a
+build of `dist/` was ever copied into `public_html`, those files win, and the
+symptom is genuinely confusing: the homepage and `/admin` return 200 and look
+right, while every `/api/*` request 500s because the app behind them is either
+crashing or not being reached at all.
+
+Check for it from outside:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://yourdomain.com/assets/logo.png
+```
+
+A `404` or a `500` from the Passenger error page means there is no `assets/`
+directory in `public_html`, so nothing is shadowing. A `200` means there is.
+
+If a stale copy is present, remove it — the app serves all of this itself from
+`dist-server/dist/`, so nothing is lost:
+
+```bash
+cd ~/public_html
+rm -rf assets admin index.html
+```
+
+Leave `.htaccess` alone. It is CloudLinux's, it is what routes requests to the
+app, and editing it by hand risks breaking the deployment that is currently
+working.
+
+Note the two states are easy to confuse from the outside. When the app itself is
+down, `public_html`'s copy is the only thing answering, so a homepage that loads
+is **not** evidence that the app started. Check `/api/health` — the app serves
+that route and a static copy does not.
+
 ## Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
+| Every route 500s, "Web application could not be started by the Phusion Passenger application server" | The startup file could not be loaded at all. Check the application log for `ERR_REQUIRE_ASYNC_MODULE` — see point 1. |
+| `/` loads but `/api/*` and `/admin` are 500 | The HTML is being served by a stale static copy in `public_html`, not by the app. See below. |
 | `Can't acquire lock for app` | Stale `.lock` from a script started via Run NPM Script. See above. Nothing in the app ran. |
 | Blank site, or 404 on `/admin` | Not built, or `app.js` missing from the application root. |
 | `/admin` 404 but the site works | The build is stale. Re-run `npm run build` and upload `dist-server/`. |
