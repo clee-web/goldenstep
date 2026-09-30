@@ -438,6 +438,7 @@ client-side route does on a static host.
 | --- | --- |
 | Docker host, VPS, Render, Railway, Fly.io | [Container](#container-recommended) below |
 | **cPanel / CloudLinux / Passenger** | **[docs/cpanel.md](docs/cpanel.md)** — read this one, it differs in important ways |
+| **cPanel, deploying from GitHub** | **[docs/fresh-start.md](docs/fresh-start.md)** — clean-slate walkthrough |
 
 ### What `npm run build` produces
 

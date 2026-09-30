@@ -1,0 +1,55 @@
+# cPanel deployment tasks.
+#
+# cPanel runs these commands after it fetches a new commit. Without this file the
+# repository is cloned and nothing else happens, which produces a checkout with
+# no build in it and an application that serves nothing.
+#
+# Two things about cPanel's deploy model that are easy to get wrong and that this
+# file is written around:
+#
+#   * cPanel does NOT set DEPLOYPATH. Its own documentation has the user export
+#     it as the first task, so the path is written out here. Change it if the
+#     application's application root is not the conventional one.
+#
+#   * The repository is cloned into a directory cPanel chooses, which is NOT the
+#     application's root. The tasks are responsible for copying files out to
+#     $DEPLOYPATH. Building in the clone produces a dist-server/ that the
+#     running application never reads.
+#
+# Every task below is self-contained: each re-derives $DEPLOYPATH rather than
+# relying on the export in an earlier task. It is not documented whether cPanel
+# runs these in a shared shell or a fresh process per task, and a task that only
+# works in one of those two cases fails on half of all hosts.
+
+---
+deployment:
+  tasks:
+    # 1. The application's root directory. The conventional location cPanel uses
+    #    when it creates a Node.js application.
+    - export DEPLOYPATH=$HOME/nodejsapp
+
+    # 2. Copy the source to the app root, install dependencies, build, and
+    #    verify the release. Exits non-zero on any failure, which stops the
+    #    deploy before the restart below.
+    #
+    #    Kept in a script file rather than inlined: it can be run by hand to
+    #    reproduce a failed deploy, and it needs more logic than YAML can carry
+    #    legibly (locating node, copying, building, checking artefacts).
+    - /bin/bash $(pwd)/scripts/cpanel-deploy.sh
+
+    # 3. Belt and braces. If cPanel carries on past a failed task 2, do not
+    #    restart into a directory that never finished building. The previous
+    #    release is still on disk and still working; staying on it is strictly
+    #    better than replacing it with a broken one.
+    - /bin/bash -c 'test -f "${DEPLOYPATH:-$HOME/nodejsapp}/tmp/.build-ok"'
+
+    # 4. Restart so the application serves the new build. cPanel watches this
+    #    file's mtime. Last, and only after the build is known good.
+    - /bin/bash -c 'touch "${DEPLOYPATH:-$HOME/nodejsapp}/tmp/restart.txt"'
+
+# Note on YAML quoting: a task containing ": " (a colon followed by a space) has
+# to be quoted, or YAML reads it as a mapping key and the task silently becomes
+# an object instead of a command. The DATA_DIR line that used to live here
+# contained one, and cPanel would have received an object it could not run. It
+# is now printed at the end of scripts/cpanel-deploy.sh, which also writes to
+# the same deploy log, so nothing was lost by removing it.

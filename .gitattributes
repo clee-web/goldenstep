@@ -1,0 +1,12 @@
+# This project is developed on Windows and deployed to Linux, and Git's default
+# on this machine (core.autocrlf=true) rewrites LF to CRLF in the working copy.
+# That is harmless for most files but fatal for a shell script: a CRLF after
+# "#!/bin/bash" makes the kernel fail with "bad interpreter", and the cPanel
+# deploy then does nothing at all while reporting success.
+scripts/cpanel-deploy.sh text eol=lf
+
+# Keep line endings in the repository LF for these too, so a diff on Linux
+# matches what is committed here.
+.cpanel.yml text eol=lf
+*.sql text eol=lf
+*.sh text eol=lf

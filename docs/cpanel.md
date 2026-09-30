@@ -5,7 +5,7 @@ Passenger. It is different from the Docker deployment in the README, and the
 differences matter — several of the errors seen on these hosts come from
 following the Docker instructions instead.
 
-## The two things that cause almost every problem
+## The three things that cause almost every problem
 
 ### 1. The server is compiled JavaScript, not TypeScript
 
@@ -42,6 +42,27 @@ The application checks this at startup and prints a warning to the error log if
 storage. **Read the error log after the first deploy** — those two warnings
 explain most "I lost my data" reports.
 
+### 3. The Node.js version decides whether `npm install` works at all
+
+`better-sqlite3` is a native module — compiled C++, not JavaScript. Shared hosts
+do not have a C++ compiler, so `npm ci` has to download a **prebuilt binary**
+matching both the platform and the exact Node version. With no prebuild and no
+compiler, the install fails with a `node-gyp` error ending in `not found: make`.
+
+The pinned version (`~12.9.0`) has prebuilt Linux x64 binaries published for
+Node **20**, **22** and **24**. It has none for Node **18**, and the `13.x` line
+publishes none at all — which is why this dependency is pinned to `~12.9.0`
+rather than tracking latest. `12.9.1` appears to exist as a GitHub release but
+was never published to npm, so `~12.9.0` is the highest safe pin.
+
+**Use Node 20 or 22 in cPanel.** Verified on Linux with no compiler present:
+Node 22 + `better-sqlite3@12.9.0` installs from a prebuild and runs; Node 22 +
+`better-sqlite3@13.0.3` tries to compile and fails.
+
+Note the interaction with the point above: the *compiled server* runs on Node 18+
+, but the *dependency install* needs a Node version with a prebuild. Node 20 and
+22 satisfy both.
+
 ## Step by step
 
 ### 1. Create the Node.js application
@@ -50,7 +71,7 @@ In cPanel → **Setup Node.js App**:
 
 | Field | Value |
 | --- | --- |
-| Node.js version | The newest offered — 20 or 22. Check; 18 is the floor. |
+| Node.js version | **20 or 22** (see note below — 18 can break dependency installation) |
 | Application mode | Production |
 | Application root | `nodejs/goldensteps` (or whatever you choose) |
 | Application URL | your domain or subdomain |
@@ -83,9 +104,11 @@ openssl rand -hex 32
 
 ### 3. Upload and build
 
-The build must run on a machine with the full toolchain, then be uploaded. Node
-18 has no TypeScript and the server needs `node-gyp` for the native module, so
-building on the host is fragile. Build locally instead:
+There are two viable paths. With the Git-based deploy, skip this upload step and use the `.cpanel.yml` in the repo (see [docs/fresh-start.md](./fresh-start.md)).
+
+For a manual upload: the build must run on a machine with the full toolchain,
+then be uploaded. Building on the host requires the same Node version with
+prebuilt binaries. Build locally instead:
 
 ```bash
 npm ci
