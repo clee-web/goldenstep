@@ -164,7 +164,18 @@ export function createApp({ enforceRateLimit = RATE_LIMIT_ENFORCED } = {}) {
     });
   }
 
-  app.use((_req, res) => {
+  /*
+   * An unmatched request is logged rather than answered silently.
+   *
+   * Everything registered has been tried by the time control reaches here, so
+   * the path and method are the whole diagnosis: if they show a request that
+   * should have matched a registered route, the deployment's route table is not
+   * the one this code mounted, and no amount of reading the browser's network
+   * panel will reveal that. It also records `baseUrl`, which is where a
+   * reverse proxy that silently rewrites the prefix shows up.
+   */
+  app.use((req, res) => {
+    console.warn(`[golden-steps] no route for ${req.method} ${req.originalUrl}`);
     const body: ApiError = {
       ok: false,
       error: 'not_found',
@@ -310,12 +321,48 @@ function countRoutes(router: unknown): number {
   return stack.filter((layer) => (layer as { route?: unknown }).route).length;
 }
 
+/**
+ * The paths a Router actually registered, as strings.
+ *
+ * `countRoutes` answers "how many", which is enough to notice that a router is
+ * empty and not enough to explain why a router that is *not* empty still fails
+ * to match. A release directory holding a current `index.js` beside a stale
+ * `routes.js` produces a router with a healthy-looking count and the wrong
+ * paths, and only the paths distinguish that. On shared hosting this log is
+ * frequently the only artefact available, so the diagnosis has to live here.
+ */
+function routePaths(router: unknown): string[] {
+  const stack = (router as { stack?: unknown }).stack;
+  if (!Array.isArray(stack)) return [];
+  return stack
+    .map((layer) => (layer as { route?: { path?: unknown } }).route)
+    .filter((route): route is { path?: unknown } => Boolean(route))
+    .map((route) => String(route.path));
+}
+
 function reportRoutes(): void {
   const counts = { api: countRoutes(api), admin: countRoutes(admin) };
 
   console.log(
     `[golden-steps] routes: ${counts.api} public, ${counts.admin} admin ` +
       `(entry ${here}/index.js, site ${DIST_DIR})`,
+  );
+  console.log(`[golden-steps] public paths: ${routePaths(api).join(' ') || '(none)'}`);
+  console.log(`[golden-steps] admin paths: ${routePaths(admin).join(' ') || '(none)'}`);
+
+  /*
+   * A mounted-but-unmatched API is the hardest failure to diagnose from a
+   * browser, because every symptom is indirect: the homepage renders, the
+   * dashboard renders, and the only evidence is a 404 on a request the operator
+   * never made. Logging the paths and the runtime makes one restart enough to
+   * tell "the routes are not registered" apart from "the routes are registered
+   * but not reachable", which are otherwise indistinguishable without a shell.
+   */
+  console.log(
+    `[golden-steps] runtime: node ${process.version} pid ${process.pid} ` +
+      `cwd ${process.cwd()} PORT ${process.env.PORT ?? '(unset)'} ` +
+      `NODE_ENV ${process.env.NODE_ENV ?? '(unset)'} ` +
+      `SERVE_STATIC ${String(SERVE_STATIC)}`,
   );
 
   if (counts.api === 0 || counts.admin === 0) {
