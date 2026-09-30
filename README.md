@@ -480,11 +480,10 @@ Two things in the image are load-bearing rather than cosmetic:
 - **A persistent volume at `/data`.** It holds both `website.db` and
   `uploads/`. Without one, every redeploy discards the dashboard's content.
 
-`better-sqlite3` is a native module, so the build stage installs `python3`,
-`make` and `g++` and the runtime stage copies the compiled result across. Both
-stages use the same base image and architecture, so the binary matches and does
-not need rebuilding. `db/` ships in the image because the schema is read at
-startup.
+There is no native module to build. SQLite comes from `node:sqlite`, which is
+compiled into the Node binary, so the dependency install is pure JavaScript and
+the same `node_modules` runs on any platform with Node 22.5+. `db/` ships in the
+image because the schema is read at startup.
 
 ### Any host with a Node runtime (no Docker)
 

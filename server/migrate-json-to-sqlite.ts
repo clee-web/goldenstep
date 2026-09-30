@@ -14,6 +14,7 @@
  * edited through the dashboard has nothing to import, and that is not an error.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import type { SQLInputValue } from 'node:sqlite';
 
 import {
   activityInputSchema,
@@ -212,12 +213,16 @@ transact(() => {
                                    beneficiaries, image, image_alt, caption, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(
+        // Values come from parsed JSON, so they are `unknown` until SQLite
+        // accepts only null/number/bigint/string/Uint8Array. The migration is
+        // reading a file this project wrote, and the schemas above have already
+        // validated every field, so the cast is a restatement of that.
+        .run(...([
           id, d.name ?? null, d.summary ?? null, d.description ?? null, d.icon ?? null,
           d.highlights === undefined ? null : JSON.stringify(d.highlights),
           d.beneficiaries ?? null, d.image ?? null, d.imageAlt ?? null, d.caption ?? null,
           new Date().toISOString(),
-        );
+        ] as SQLInputValue[]));
       count += 1;
     }
     counts.programmes = count;

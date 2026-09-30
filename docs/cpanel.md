@@ -90,33 +90,35 @@ The application checks this at startup and prints a warning to the error log if
 storage. **Read the error log after the first deploy** — those two warnings
 explain most "I lost my data" reports.
 
-### 4. The Node.js version decides whether `npm install` works at all
+### 4. The Node.js version must be 22.5 or newer
 
-`better-sqlite3` is a native module — compiled C++, not JavaScript. Shared hosts
-do not have a C++ compiler, so `npm ci` has to download a **prebuilt binary**
-matching both the platform and the exact Node version. With no prebuild and no
-compiler, the install fails with a `node-gyp` error ending in `not found: make`.
+There is no native module any more. SQLite comes from `node:sqlite`, which is
+compiled into the Node binary, so `npm ci` on the host is a pure JavaScript
+install: no prebuild to match, no compiler, no glibc.
 
-The pinned version (`~12.9.0`) has prebuilt Linux x64 binaries published for
-Node **20**, **22** and **24**. It has none for Node **18**, and the `13.x` line
-publishes none at all — which is why this dependency is pinned to `~12.9.0`
-rather than tracking latest. `12.9.1` appears to exist as a GitHub release but
-was never published to npm, so `~12.9.0` is the highest safe pin.
+This replaced `better-sqlite3`, and the reason is worth recording because the
+failure it caused is hard to read. A native module ships as a compiled `.node`
+file linked against the glibc of the machine that built it. A release built on a
+modern Linux and deployed to an older host installs cleanly, starts cleanly, and
+then fails on the first query:
 
-**Use Node 20, 22 or 24 in cPanel — not 18.** Node 18 has no prebuild for
-`better-sqlite3` in any published line, so an install there always falls through
-to `node-gyp` and always fails.
+```
+/lib64/libm.so.6: version `GLIBC_2.29' not found
+(required by .../better-sqlite3.node)
+```
 
-Verified on Linux x86_64 with no compiler present (`make` and `g++` absent):
-Node 22 and Node 24 both install `better-sqlite3@12.9.0` from a prebuild with
-zero compile attempts and load it; `13.0.3` tries to compile and fails. A binary
-built for one Node major version will not load on another, so **the release must
-be built with the same Node version the host runs** — that is why the single-folder
-release is built for one specific version rather than "whatever is installed".
+Every route that reads the database returns 500 while every route that does not
+keeps working, so it presents as an application bug. The error names a symbol,
+not the cause, and nothing at install time hints at it.
 
-Note the interaction with point 2: the *compiled server* runs on Node 18+, but the
-*dependency install* needs a version with a prebuild. Node 20, 22 and 24 satisfy
-both.
+**Use Node 22.5+ in cPanel.** `node:sqlite` did not exist before 22.5, and the
+`engines` field in `package.json` states the floor so an unsuitable host is
+refused at install rather than at the first request. Node 24 is what this project
+is developed and released against.
+
+The release is no longer version-specific in the way it used to be: with nothing
+platform-specific inside, the same `node_modules` runs on any host with a
+supported Node.
 
 ## Step by step
 
@@ -207,9 +209,10 @@ public entry point"* has the same cause — a half-installed or mixed-up
 `node_modules`. This project's own code imports only `import { z } from 'zod'`,
 the correct public entry point, so the project is not the problem.
 
-**Never upload `node_modules` from your own machine.** A local install contains
-platform-specific binaries — `better-sqlite3` is compiled for your operating
-system and will not load on the server. Delete and reinstall on the server:
+Uploading `node_modules` from your own machine is no longer a hazard — there are
+no platform-specific binaries in the dependency tree. The single-folder release
+ships the dependencies it was verified with, which is the point of building it
+on Linux in the first place. If you would rather install on the host:
 
 ```bash
 cd ~/nodejs/goldensteps
@@ -221,15 +224,18 @@ If a lockfile problem is suspected, deleting the lockfile and reinstalling will
 resolve it, but then commit the regenerated `package-lock.json` locally so the
 two stay in step.
 
-### 5. Check better-sqlite3 loads
+### 5. Check SQLite opens
 
-`better-sqlite3` is a native module and needs to be compiled for the host. If the
-install succeeded, that already happened, but confirm it explicitly:
+`node:sqlite` is built in, so there is nothing to compile. What is worth
+confirming is that the data directory is writable, because the failure is
+silent until a query runs:
 
 ```bash
 cd ~/nodejs/goldensteps
-node -e "const D=require('better-sqlite3');const d=new D('/tmp/t.db');d.exec('CREATE TABLE x(a)');console.log('better-sqlite3 OK');d.close()"
+node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(process.env.DATA_DIR+'/probe.db');d.exec('CREATE TABLE IF NOT EXISTS x(a)');console.log('sqlite OK');d.close()"
 ```
+
+Or simply read the application log, which reports the same thing on startup.
 
 If that prints an error about a missing shared library, the host cannot build
 native modules. Ask Safaricom support to enable it, or deploy somewhere that

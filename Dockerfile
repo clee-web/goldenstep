@@ -5,19 +5,16 @@
 # deployment — there is no separate frontend host to configure, and no rewrite
 # rules to keep in sync.
 #
-# better-sqlite3 is a native module, so the dependency install needs a compiler.
-# The build stage provides one and the runtime stage copies the compiled result
-# across; the two stages use the same base image and architecture, so the binary
-# matches and does not need recompiling.
+# There are no native modules: SQLite comes from `node:sqlite`, which is part of
+# the Node binary itself. The dependency install is therefore pure JavaScript and
+# identical on every platform, which is also why the same release runs on shared
+# hosting that has no compiler.
 
 # ---------------------------------------------------------------- build stage
 FROM node:24-bookworm-slim AS build
 
-# `python3` and `make` are what node-gyp needs if better-sqlite3 has to compile
-# from source rather than use a prebuilt binary. On Debian the C/C++ headers live
-# in the `g++` package, which pulls in `gcc` and `make`.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,8 +88,7 @@ COPY scripts/ ./scripts/
 # server in `dist-server/`.
 RUN npm run build
 
-# Drops devDependencies, keeping the compiled better-sqlite3 binary so the
-# runtime stage does not have to rebuild it.
+# Drops devDependencies, which are only needed for the build above.
 RUN npm prune --omit=dev
 
 # -------------------------------------------------------------- runtime stage

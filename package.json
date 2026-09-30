@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Golden Steps — full-stack React website for a grassroots women-led organization in Kisumu East, Kenya.",
   "engines": {
-    "node": ">=18.20"
+    "node": ">=22.18"
   },
   "scripts": {
     "dev": "concurrently -n api,web -c green,cyan \"npm:dev:api\" \"npm:dev:web\"",
@@ -24,7 +24,6 @@
     "test": "node --test server/*.test.ts"
   },
   "dependencies": {
-    "better-sqlite3": "~12.9.0",
     "compression": "^1.8.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
@@ -38,7 +37,6 @@
   "devDependencies": {
     "@eslint/js": "^9.39.0",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/multer": "^2.2.0",

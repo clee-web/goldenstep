@@ -71,24 +71,21 @@ cPanel → **Setup Node.js App** → **Create Application**.
 
 ### The Node.js version is not a detail
 
-`better-sqlite3` is a native module: it is compiled C++, not JavaScript. Most
-shared hosts do not have a C++ compiler, so `npm install` has to download a
-**prebuilt binary** that matches both the platform and the exact Node version.
+SQLite comes from `node:sqlite`, which is compiled into the Node binary, so
+there is no native module to build and no compiler to need. `npm ci` is a pure
+JavaScript install on any platform.
 
-The `better-sqlite3` version this project is pinned to (`~12.9.0`) has prebuilt
-binaries published for:
+The one requirement is that **`node:sqlite` exists at all**: it landed in Node
+22.5. So:
 
-- Node **22**
-- Node **24**
-- Node **20**
+- Node **24** — what this project is developed and released against.
+- Node **22.5+** — fine.
+- Node **20 or older** — `node:sqlite` is missing and the app cannot read its
+  own content. `package.json` states the floor in `engines`, so an unsuitable
+  version is refused at install rather than failing later on every request.
 
-It does **not** have one for Node **18**, and the current `13.x` line publishes
-no prebuilt Linux binaries at all. On either of those, `npm ci` fails with a
-`node-gyp` error about `make` not being found.
-
-So: **use Node 20 or 22.** If you must use a different version, expect the
-install to fail, and the fix is to change the version in cPanel rather than to
-fight `node-gyp`.
+If you must use an older version, the fix is to change the version in cPanel
+rather than to work around it.
 
 ---
 
@@ -197,7 +194,8 @@ application root.
 | Symptom | Cause |
 |---|---|
 | Deploy says OK, site is empty | `DATA_DIR` inside the application root, or inside the repository |
-| `node-gyp` / `make: not found` during deploy | Node version has no prebuilt `better-sqlite3` binary. Use Node 20 or 22. |
+| `node-gyp` / `make: not found` during deploy | A native module crept back into the dependencies. There should be none; check `package.json`. |
+| `GLIBC_x.yy not found` for a `.node` file | A native module built on a newer glibc than the host. The fix is `node:sqlite`, not a rebuild. |
 | `Can't acquire lock for app` | A script started via **Run NPM Script** is still running; it has no Stop button and holds the lock forever. Restart the application. |
 | Sign-in always fails, password is right | No HTTPS. Install AutoSSL. |
 | `npm: command not found` in the deploy log | `scripts/cpanel-deploy.sh` could not find Node. It looks in the Node.js Selector paths; tell me and I will extend the search. |

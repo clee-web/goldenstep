@@ -377,6 +377,22 @@ function reportRoutes(): void {
    * tell "the routes are not registered" apart from "the routes are registered
    * but not reachable", which are otherwise indistinguishable without a shell.
    */
+  /*
+   * `node:sqlite` is the storage layer, and it only exists from Node 22.5. On an
+   * older runtime the import fails at startup with a module error that says
+   * nothing about which version is required, so the floor is checked here and
+   * named explicitly. A host that is too old then fails to start, loudly, rather
+   * than serving a site whose every content route 500s.
+   */
+  const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
+  if (major < 22 || (major === 22 && minor < 5)) {
+    throw new Error(
+      `Node ${process.versions.node} is too old. This application stores its content ` +
+        'in SQLite through node:sqlite, which requires Node 22.5 or newer. Change the ' +
+        'Node version in the host control panel and restart.',
+    );
+  }
+
   console.log(
     `[golden-steps] runtime: node ${process.version} pid ${process.pid} ` +
       `cwd ${process.cwd()} PORT ${process.env.PORT ?? '(unset)'} ` +

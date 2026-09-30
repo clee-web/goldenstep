@@ -1,10 +1,8 @@
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import Database from 'better-sqlite3';
-
 import { DATA_DIR, UPLOADS_DIR } from './paths.ts';
-import { closeDb, databaseFile } from './sqlite.ts';
+import { closeDb, databaseFile, openDatabase } from './sqlite.ts';
 import { contentCounts, describeContent, inspectStorage } from './persistence.ts';
 
 /**
@@ -93,7 +91,7 @@ function backup(out?: string, includeUploads = true): void {
    * await: the snapshot is complete when the call returns.
    */
   const dbFile = path.join(target, 'website.db');
-  const handle = new Database(databaseFile, { readonly: true });
+  const handle = openDatabase(databaseFile, { readOnly: true });
   try {
     handle.pragma('wal_checkpoint(TRUNCATE)');
     handle.exec(`VACUUM INTO ${quoteSqlString(dbFile)}`);
