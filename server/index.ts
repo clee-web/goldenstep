@@ -111,7 +111,29 @@ export function createApp({ enforceRateLimit = RATE_LIMIT_ENFORCED } = {}) {
     );
 
     const indexHtml = path.join(DIST_DIR, 'index.html');
-    app.get(/.*/, (_req, res) => {
+
+    /*
+     * The SPA fallback must never answer an API or upload path.
+     *
+     * This is not a theoretical tidy-up. A deployment whose API routes are
+     * missing — a process started from a stale build, a half-extracted
+     * release, a `dist-server` left over from an older layout — answers every
+     * unmatched GET with `index.html` and a **200**. A client asking for JSON
+     * gets HTML, the parse fails, and the failure surfaces two steps away from
+     * its cause as `Cannot read properties of null (reading 'authenticated')`
+     * in the dashboard. The one thing that would have identified it, a JSON 404
+     * on the API path, was unreachable because the fallback was registered
+     * first and swallowed it.
+     *
+     * So the fallback declines API and upload paths and lets the JSON 404 below
+     * answer them. An API that is genuinely missing now says so.
+     */
+    const mustBeJson = /^\/(api|uploads)(\/|$)/;
+    app.get(/.*/, (req, res, next) => {
+      if (mustBeJson.test(req.path)) {
+        next();
+        return;
+      }
       res.set('Cache-Control', 'no-cache');
       res.sendFile(indexHtml);
     });

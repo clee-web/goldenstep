@@ -98,6 +98,34 @@ async function request<T>(
       };
     }
 
+    /*
+     * A 2xx response whose body is not a JSON object is not a result, and must
+     * not be reported as one.
+     *
+     * `body` is `null` whenever the parse fails, and returning
+     * `{ ok: true, data: null }` moves the failure into the caller: the
+     * dashboard then reads `.authenticated` off null and throws
+     * `Cannot read properties of null`. That names a bug in the dashboard's own
+     * code, which is the last thing worth telling an operator whose actual
+     * problem is that the API is not running.
+     *
+     * The usual cause is something other than this application answering the
+     * request with a web page: a stale static copy of the site in public_html,
+     * or an app process started from an older build. Both reply 200 with HTML.
+     */
+    if (!isRecord(body)) {
+      return {
+        ok: false,
+        error: {
+          ok: false,
+          error: 'server_error',
+          message:
+            'The server replied with a web page instead of data, so the application is not ' +
+            'running correctly. Redeploy and restart it, then check the error log.',
+        },
+      };
+    }
+
     return { ok: true, data: body as T };
   } catch {
     return {
@@ -114,6 +142,11 @@ function isApiError(value: unknown): value is ApiError {
     (value as ApiError).ok === false &&
     typeof (value as ApiError).message === 'string'
   );
+}
+
+/** A JSON object, as opposed to null, an array, or a bare scalar. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const json = (method: string, body: unknown): RequestInit => ({
