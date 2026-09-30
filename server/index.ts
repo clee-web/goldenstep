@@ -175,7 +175,26 @@ export function createApp({ enforceRateLimit = RATE_LIMIT_ENFORCED } = {}) {
    * reverse proxy that silently rewrites the prefix shows up.
    */
   app.use((req, res) => {
-    console.warn(`[golden-steps] no route for ${req.method} ${req.originalUrl}`);
+    /*
+     * A request for an API path that ends in `index.html` did not arrive as the
+     * caller wrote it: a web server in front of the app rewrote it. The usual
+     * source is a single-page-app fallback that rewrites every unmatched path to
+     * `index.html`, which belongs in front of a static site and must be kept
+     * from touching the API. It is called out separately because the symptom is
+     * otherwise inexplicable from the browser: the dashboard loads, the public
+     * site loads, and every API call 404s for a path that is provably
+     * registered.
+     */
+    const rewritten = /^\/(api|uploads)\/.*index\.html$/.test(req.originalUrl);
+    if (rewritten) {
+      console.warn(
+        `[golden-steps] ${req.method} ${req.originalUrl} looks rewritten — ` +
+          'a rewrite rule in front of the app is sending API requests to ' +
+          'index.html. Exclude /api from that rule.',
+      );
+    } else {
+      console.warn(`[golden-steps] no route for ${req.method} ${req.originalUrl}`);
+    }
     const body: ApiError = {
       ok: false,
       error: 'not_found',
