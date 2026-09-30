@@ -6,6 +6,7 @@ import { enquirySchema } from '../shared/schemas.ts';
 import type { ApiError, ContentResponse, EnquiryResponse } from '../shared/schemas.ts';
 import { readManagedContent, sortByDateDesc } from './content-store.ts';
 import { inspectStorage } from './persistence.ts';
+import { databaseFile, db } from './sqlite.ts';
 import { countEnquiries, listEnquiries, saveEnquiry } from './store.ts';
 import { sendEnquiryEmail } from './email.ts';
 
@@ -38,9 +39,38 @@ export const enquiryLimiter = rateLimit({
  */
 api.get('/health', (_req, res) => {
   const storage = inspectStorage();
+
+  /*
+   * The database is opened here, not just described.
+   *
+   * Every other public route reads from SQLite, so "the data directory exists
+   * and looks persistent" says nothing about whether the site can actually serve
+   * its content. A permissions problem or a corrupt file leaves `/api/health`
+   * reporting a clean bill of health while `/api/content` returns a 500, and on
+   * shared hosting the log is often the only artefact available — so health
+   * carries the failure itself. The `SELECT` is the cheapest statement that
+   * still proves the file opened, the schema applied and the tables exist.
+   *
+   * As with `storage`, the status code stays 200: a restart cannot fix a
+   * permissions or corruption problem, and answering 503 would turn a
+   * configuration fault into a restart loop.
+   */
+  let database: { ok: boolean; file: string; error?: string };
+  try {
+    db().prepare('SELECT count(*) AS rows FROM projects').get();
+    database = { ok: true, file: databaseFile };
+  } catch (error) {
+    database = {
+      ok: false,
+      file: databaseFile,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
   res.json({
     ok: true,
     uptime: process.uptime(),
+    database,
     storage: {
       durability: storage.durability,
       dataDir: storage.dataDir,

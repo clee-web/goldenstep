@@ -19,6 +19,7 @@ interface ProgrammesBody {
 }
 interface HealthBody {
   ok: boolean;
+  database: { ok: boolean; file: string; error?: string };
   storage: {
     durability: 'durable' | 'ephemeral' | 'unknown';
     dataDir: string;
@@ -123,6 +124,22 @@ describe('GET /api/health', () => {
   it('stays 200 even when storage is not known to be durable', async () => {
     const res = await fetch(`${baseUrl}/api/health`);
     assert.equal(res.status, 200);
+  });
+
+  /*
+   * Health reporting a durable data directory while the database is unusable is
+   * how a broken site looks healthy: every public route reads from SQLite, so a
+   * permissions or corruption fault turns `/api/content` into a 500 while
+   * health stays green. Health opens the database for real so that failure is
+   * visible from outside, where the log may not be.
+   */
+  it('opens the database, so an unusable one cannot look healthy', async () => {
+    const body = await json<HealthBody>(await fetch(`${baseUrl}/api/health`));
+
+    assert.ok(body.database, 'health must include a database block');
+    assert.equal(body.database.ok, true, `database unusable: ${body.database.error}`);
+    assert.ok(body.database.file.length > 0);
+    assert.equal(body.database.error, undefined);
   });
 });
 
