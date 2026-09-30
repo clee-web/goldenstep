@@ -153,6 +153,47 @@ describe('admin authentication', () => {
     });
     assert.equal(res.status, 401);
   });
+
+  /*
+   * Regression: a malformed percent-escape in the cookie used to throw a
+   * URIError out of `decodeURIComponent`, and a throw inside a route handler is
+   * an unhandled error, so a corrupt cookie turned every admin endpoint into a
+   * 500. It was reachable without signing in, and unrecoverable from the
+   * dashboard because the page that would clear the cookie was the one erroring.
+   *
+   * Both routes are checked because the cookie is read in two places, and
+   * `requireAdmin` guards every write — a fix in only one of them would leave
+   * half the API still returning 500.
+   */
+  it('treats a malformed cookie as signed out rather than erroring', async () => {
+    const malformed = [
+      'gs_admin=1234.abc%',
+      'gs_admin=abc%zz.def.ghi',
+      'gs_admin=abc%2',
+      'gs_admin=%E0%A4%A',
+      'gs_admin=100%',
+    ];
+
+    for (const value of malformed) {
+      const session = await fetch(`${baseUrl}/api/admin/session`, {
+        headers: { cookie: value },
+      });
+      assert.equal(session.status, 200, `${value} should not 500 on the session check`);
+      assert.equal((await json<SessionBody>(session)).authenticated, false);
+
+      const content = await fetch(`${baseUrl}/api/admin/content`, {
+        headers: { cookie: value },
+      });
+      assert.equal(content.status, 401, `${value} should be unauthorised, not a 500`);
+    }
+  });
+
+  it('still accepts a genuine cookie after a malformed one was seen', async () => {
+    // Guards against "fix" being a blanket early return that ignores valid
+    // cookies: the reader must skip only the value it cannot decode.
+    const res = await fetch(`${baseUrl}/api/admin/session`, { headers: { cookie } });
+    assert.equal((await json<SessionBody>(res)).authenticated, true);
+  });
 });
 
 describe('managed content CRUD', () => {

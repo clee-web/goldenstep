@@ -126,8 +126,20 @@ export function createApp({ enforceRateLimit = RATE_LIMIT_ENFORCED } = {}) {
     res.status(404).json(body);
   });
 
-  app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
-    console.error('[golden-steps] unhandled error:', error);
+  /*
+   * Last-resort handler. The request is named in the log because the error alone
+   * is rarely enough to locate it: a stack trace points at the line that threw,
+   * not at the endpoint a user was actually using, and on shared hosting this
+   * log is often the only artefact available to debug a deploy. `error.stack` is
+   * preferred over `error` because Node prints a bare `URIError` as
+   * `URIError: URI malformed` with no frames.
+   */
+  app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
+    console.error(
+      `[golden-steps] unhandled error on ${req.method} ${req.originalUrl}\n${
+        error.stack ?? error.message ?? String(error)
+      }`,
+    );
     if (res.headersSent) return;
 
     const body: ApiError = {

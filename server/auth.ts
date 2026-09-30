@@ -103,7 +103,29 @@ function readCookie(req: Request, name: string): string | undefined {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
     if (part.slice(0, eq).trim() !== name) continue;
-    return decodeURIComponent(part.slice(eq + 1).trim());
+
+    const raw = part.slice(eq + 1).trim();
+
+    /*
+     * `decodeURIComponent` throws a URIError on a malformed percent-escape, and
+     * a throw inside a route handler is an unhandled error — so a corrupt cookie
+     * turns every admin endpoint into a 500 rather than simply not being signed
+     * in. That is a bad failure in three ways: it is unauthenticated and
+     * triggerable by anyone who can set a cookie, it affects every route that
+     * reads one, not just this check, and it is unrecoverable from the dashboard
+     * because the page that would clear the cookie is the one returning the 500.
+     *
+     * Our own cookies are base64url plus dots, which never contain a percent, so
+     * a value that needs decoding and cannot be decoded was never issued by us.
+     * Falling back to the raw value is both safe — it will fail the signature
+     * check like any other invalid token — and keeps a truncated or hand-edited
+     * cookie a "not signed in" answer instead of an error.
+     */
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
   }
   return undefined;
 }
