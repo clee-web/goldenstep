@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { here } from './here.ts';
 import { DATA_DIR } from './paths.ts';
 
 /**
@@ -20,8 +21,8 @@ import { DATA_DIR } from './paths.ts';
  * collection, and neither should create a database file as a side effect.
  */
 
-/** `db/schema.sql`, resolved from the repo root rather than from `dist`. */
-const SCHEMA_FILE = path.resolve(import.meta.dirname, '..', 'db', 'schema.sql');
+/** `db/schema.sql`, resolved from the app root rather than from `dist`. */
+const SCHEMA_FILE = path.resolve(here, '..', 'db', 'schema.sql');
 
 const DB_FILE = process.env.DATABASE_FILE
   ? path.resolve(process.env.DATABASE_FILE)

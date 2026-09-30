@@ -10,11 +10,12 @@ import type { ApiError } from '../shared/schemas.ts';
 import { admin } from './admin-routes.ts';
 import { authConfigured } from './auth.ts';
 import { api, enquiryLimiter } from './routes.ts';
-import { UPLOADS_DIR } from './paths.ts';
+import { APP_ROOT, UPLOADS_DIR } from './paths.ts';
 import { contentCounts, describeContent, inspectStorage } from './persistence.ts';
 import { closeDb } from './sqlite.ts';
+import { here } from './here.ts';
 
-const root = path.resolve(import.meta.dirname, '..');
+const root = path.resolve(here, '..');
 const PORT = Number(process.env.PORT ?? 4000);
 const HOST = process.env.HOST ?? '0.0.0.0';
 const SERVE_STATIC = process.env.SERVE_STATIC !== 'false';
@@ -160,6 +161,36 @@ const isDirectRun =
  */
 function reportStorage(): void {
   const storage = inspectStorage();
+
+  /*
+   * A data directory inside the release directory survives a deploy that
+   * overwrites files and dies on one that replaces the directory. Warned about
+   * separately from the mount check because it is a different mistake with a
+   * different fix: move the directory out, rather than attach a volume.
+   */
+  const insideRelease =
+    storage.dataDir === APP_ROOT || storage.dataDir.startsWith(APP_ROOT + path.sep);
+  if (insideRelease) {
+    console.warn(
+      [
+        '',
+        '='.repeat(72),
+        '  THE DATA DIRECTORY IS INSIDE THE APPLICATION DIRECTORY',
+        '='.repeat(72),
+        `  ${storage.dataDir}`,
+        '',
+        '  This works only while a deploy overwrites files in place. A deploy that',
+        '  replaces the whole application directory — which is the normal way to',
+        '  deploy — will delete your content with no warning and no error.',
+        '',
+        '  Move it out and point DATA_DIR at it, for example:',
+        '    DATA_DIR=/home/USER/golden-steps-data',
+        '='.repeat(72),
+        '',
+      ].join('\n'),
+    );
+  }
+
   if (storage.durability !== 'ephemeral') {
     console.log(`[golden-steps] storage: ${storage.detail}`);
     return;
@@ -197,7 +228,17 @@ function reportStorage(): void {
   }
 }
 
-if (isDirectRun) {
+/**
+ * Starts the HTTP listener and installs shutdown handling.
+ *
+ * Exported, not just called under `isDirectRun`, because `app.js` is the entry
+ * point on cPanel and Passenger. That file imports this module and calls
+ * `start()` itself, so `process.argv[1]` is `app.js` rather than this file and
+ * the `isDirectRun` test is false. Without an exported entry point the process
+ * would import this module, start nothing, and exit 0 — the application would
+ * look deployed and answer no requests at all.
+ */
+export function start(): void {
   const server = createApp().listen(PORT, HOST, () => {
     console.log(`[golden-steps] API listening on http://localhost:${PORT}`);
     if (authConfigured) {
@@ -219,12 +260,12 @@ if (isDirectRun) {
    * Close the database on shutdown so SQLite checkpoints the WAL and releases
    * the file lock.
    *
-   * A container platform stops the process with SIGTERM, not SIGKILL, and an
-   * abrupt exit leaves a `-wal` file next to the database. That is recoverable
-   * — SQLite replays it on the next open — but it means the database and its
-   * writes live in two files, so a snapshot taken mid-deploy can capture one
-   * without the other. Draining the listener first also stops a deploy from
-   * cutting off a request that is halfway through a write.
+   * A container platform or Passenger stops the process with SIGTERM, not
+   * SIGKILL, and an abrupt exit leaves a `-wal` file next to the database. That
+   * is recoverable — SQLite replays it on the next open — but it means the
+   * database and its writes live in two files, so a snapshot taken mid-deploy
+   * can capture one without the other. Draining the listener first also stops a
+   * deploy from cutting off a request that is halfway through a write.
    */
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
@@ -241,3 +282,5 @@ if (isDirectRun) {
     });
   }
 }
+
+if (isDirectRun) start();

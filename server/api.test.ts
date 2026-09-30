@@ -19,6 +19,11 @@ interface ProgrammesBody {
 }
 interface HealthBody {
   ok: boolean;
+  storage: {
+    durability: 'durable' | 'ephemeral' | 'unknown';
+    dataDir: string;
+    detail: string;
+  };
 }
 interface EnquiryBody {
   ok: boolean;
@@ -94,6 +99,30 @@ describe('GET /api/health', () => {
     const res = await fetch(`${baseUrl}/api/health`);
     assert.equal(res.status, 200);
     assert.equal((await json<HealthBody>(res)).ok, true);
+  });
+
+  it('reports where the data directory is, so a deploy can be checked', async () => {
+    const body = await json<HealthBody>(await fetch(`${baseUrl}/api/health`));
+
+    assert.ok(body.storage, 'health must include a storage block');
+    assert.ok(
+      ['durable', 'ephemeral', 'unknown'].includes(body.storage.durability),
+      `unexpected durability ${body.storage.durability}`,
+    );
+    assert.ok(body.storage.dataDir.length > 0);
+    assert.ok(body.storage.detail.length > 0);
+  });
+
+  /*
+   * Storage trouble is reported in the body, never in the status code. A 503
+   * here would fail a container platform's HEALTHCHECK, so the platform would
+   * kill a container that is running perfectly well and restart it in a loop —
+   * turning a warning into an outage. `unknown` is the honest answer off Linux,
+   * where mount information is not available, and it keeps a dev laptop quiet.
+   */
+  it('stays 200 even when storage is not known to be durable', async () => {
+    const res = await fetch(`${baseUrl}/api/health`);
+    assert.equal(res.status, 200);
   });
 });
 

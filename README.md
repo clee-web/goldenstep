@@ -13,7 +13,7 @@ partnership model. Community photographs come from the deck's own image set.
 | Layer | Choice |
 | --- | --- |
 | Frontend | React 19 + TypeScript, Vite 8, Tailwind CSS 4 |
-| Backend | Express 5 (TypeScript, run directly by Node 24's type stripping) |
+| Backend | Express 5 (TypeScript, compiled to JavaScript for deployment) |
 | Validation | Zod 4, shared between client and server |
 | Storage | Atomic JSON file store (swap in Postgres later — see below) |
 | Testing | `node:test` against a live Express instance |
@@ -33,12 +33,14 @@ npm run dev
 ### Other commands
 
 ```bash
-npm run build      # typecheck + production bundle into dist/
-npm start          # run the API, serving dist/ when it exists
+npm run build      # typecheck, build the site into dist/, stage dist-server/
+npm start          # run the compiled server, serving dist/ when it exists
+npm run start:local# as above, plus your local .env file
 npm run preview    # serve the built site via Vite
 npm test           # API integration tests
 npm run lint       # ESLint (flat config, zero warnings tolerated)
-npm run typecheck  # tsc project references
+npm run typecheck  # tsc project references, client and server
+npm run backup     # WAL-safe snapshot of the database and uploads/
 ```
 
 ## Before you launch
@@ -72,18 +74,27 @@ shared/          Content + schemas imported by BOTH client and server
   content.ts       All deck content: programmes, impact, vision, copy
                    plus `chapters`, the narrative that drives the rail
   schemas.ts       Zod schemas: enquiry, managed content, API response types
-server/          Express API (TypeScript, no build step)
-  index.ts         App factory, static hosting, error handling
+server/          Express API (TypeScript, compiled to dist-server/ for deploy)
+  index.ts         App factory, static hosting, error handling, start()
   routes.ts        /api/health, /api/programmes, /api/content, /api/enquiries
   admin-routes.ts  /api/admin/* — session, content CRUD, uploads
   auth.ts          Password check, HMAC session cookie, requireAdmin
   uploads.ts       Multer config, MIME allow-list, error translation
   content-store.ts Managed content: read, create, update, delete, patch
+  sqlite.ts        Lazy connection, WAL, schema application, transactions
+  persistence.ts   Detects whether DATA_DIR is durable; warns when it is not
+  backup.ts        WAL-safe backup and restore (`npm run backup`)
   json-file.ts     Atomic, serialised JSON persistence helper
   paths.ts         Every runtime-writeable path, from DATA_DIR
+  here.ts          This file's directory, on Node 18 as well as 20+
   store.ts         Enquiry persistence
   api.test.ts      Enquiry and public API integration tests
   admin.test.ts    Auth, CRUD, upload and content tests
+scripts/
+  stage.mjs        Assembles the deployable dist-server/ directory
+db/
+  schema.sql       The single source of truth, applied at startup
+app.js             Entry point for cPanel / Passenger
 src/
   App.tsx         Section order IS the narrative (see below)
   admin/          Dashboard shell, login and the five managers
@@ -421,6 +432,29 @@ frontend to deploy and no rewrite rules to keep in sync — which is why the
 dashboard keeps working in production instead of 404ing the way a purely
 client-side route does on a static host.
 
+### Pick your target
+
+| Target | Guide |
+| --- | --- |
+| Docker host, VPS, Render, Railway, Fly.io | [Container](#container-recommended) below |
+| **cPanel / CloudLinux / Passenger** | **[docs/cpanel.md](docs/cpanel.md)** — read this one, it differs in important ways |
+
+### What `npm run build` produces
+
+```
+dist/          the built site, including the separate dist/admin/index.html
+dist-server/   the whole deployable server
+```
+
+`dist-server/` is self-contained: compiled JavaScript for `server/` and
+`shared/`, plus copies of `dist/` and `db/`. It is what gets deployed, and the
+one directory to upload when the host is not running Docker.
+
+The server is **compiled, not run as TypeScript.** Node can only execute `.ts`
+files directly from 22.18 onward, and shared hosting commonly offers Node 18 or
+20, so `node server/index.ts` cannot work there. Nothing TypeScript-related is
+needed at runtime — no `tsx`, no type stripping. It runs on Node 18+.
+
 ### Container (recommended)
 
 Works as-is on Render, Railway, Fly.io, DigitalOcean, Azure Container Apps, AWS
@@ -463,9 +497,10 @@ Set `NODE_ENV=production` — it enables rate limiting and the `Secure` flag on
 the session cookie. Behind a proxy, set `TRUST_PROXY_HOPS` to the number of hops,
 or rate limiting sees the proxy's IP instead of the client's.
 
-> The server runs `server/index.ts` directly via Node's native TypeScript
-> stripping, so there is no compile step for the backend and no `tsx` in
-> production. That needs Node **22.18+** (24 recommended), matching `engines`.
+> `npm start` runs `node dist-server/server/index.js` — compiled JavaScript, so
+> it works on Node 18 and up. For cPanel and Passenger, point the startup file at
+> `app.js` instead; see [docs/cpanel.md](docs/cpanel.md). To run with your local
+> `.env` file, use `npm run start:local`.
 
 ### Required environment
 
@@ -475,9 +510,44 @@ Set these on the platform; do not ship a `.env` file in the image.
 | --- | --- |
 | `ADMIN_PASSWORD` | Enables `/admin`. Empty disables the dashboard entirely. |
 | `ADMIN_SESSION_SECRET` | Signs the session cookie. **Separate from the password** — a stolen cookie should not be the same secret as a stolen password. |
-| `DATA_DIR` | Persistent volume path. Points at a container filesystem without a volume, everything is lost on redeploy. |
+| `DATA_DIR` | Persistent storage path. Point it at a container filesystem without a volume, or inside the application directory, and content is lost on redeploy. |
 | `NODE_ENV` | `production`. |
 | `TRUST_PROXY_HOPS` | Proxy hop count, when behind nginx/Caddy/a platform proxy. |
+
+### Not losing data on redeploy
+
+This is the single most expensive mistake available in this deployment, and it
+fails silently: without a persistent `DATA_DIR` the app starts normally, creates
+an empty database, and serves a perfectly working site with no content in it.
+The operator adds content, the next deploy replaces the container, and it is
+gone with no message at any point.
+
+So the app checks, and says so:
+
+- **At startup**, a full-width warning on the error log if `DATA_DIR` is not
+  persistent, or if it sits inside the application directory.
+- **On `/api/health`**, a `storage` block you can assert on:
+
+  ```bash
+  curl -s localhost:4000/api/health | grep -q '"durability":"durable"' \
+    && echo persistent || echo AT RISK
+  ```
+
+Backing up:
+
+```bash
+npm run backup                       # writes ./backups/<timestamp>/
+npm run restore -- ./backups/<timestamp>
+```
+
+The backup covers both halves of the data — `website.db` **and** `uploads/` —
+because restoring the database without the policy PDFs leaves every policy row
+pointing at a missing file.
+
+> **Never copy `website.db` by hand.** It runs in WAL mode, so recent commits sit
+> in a separate `website.db-wal` file until a checkpoint. Copying the `.db` alone
+> can yield a file that opens cleanly but has lost recent writes, or is missing
+> whole tables. `npm run backup` uses SQLite's own consistent-snapshot mechanism.
 
 ### The two HTML entries
 

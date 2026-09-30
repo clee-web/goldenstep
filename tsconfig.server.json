@@ -1,0 +1,27 @@
+{
+  "//": "Emits runnable JavaScript for the server. See README: this exists because cPanel and other shared hosts run Node 18 or 20, where `node server/index.ts` cannot work at all — there is no type stripping before Node 22.18.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true,
+
+    "outDir": "dist-server",
+    "rootDir": "."
+  },
+  "include": ["server", "shared"],
+  "exclude": ["server/**/*.test.ts"]
+}

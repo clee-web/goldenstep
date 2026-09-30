@@ -73,15 +73,22 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY tsconfig*.json vite.config.ts index.html ./
+COPY app.js ./app.js
 COPY admin/ ./admin/
 COPY shared/ ./shared/
 COPY src/ ./src/
 COPY public/ ./public/
 COPY server/ ./server/
 COPY db/ ./db/
+# scripts/stage.mjs runs at the end of `npm run build` to assemble dist-server/,
+# so it has to be in the build stage. Omitting it fails the build late and with a
+# message about a missing file rather than a missing COPY.
+COPY scripts/ ./scripts/
 
-# `tsc -b` type-checks and Vite emits `dist/`, including the separate
-# `dist/admin/index.html` entry that makes /admin resolve on its own.
+# `tsc -b` type-checks, Vite emits `dist/` (including the separate
+# `dist/admin/index.html` entry that makes /admin resolve on its own), and
+# `tsc -p tsconfig.server.json` plus `scripts/stage.mjs` produce the runnable
+# server in `dist-server/`.
 RUN npm run build
 
 # Drops devDependencies, keeping the compiled better-sqlite3 binary so the
@@ -107,14 +114,12 @@ ENV NODE_ENV=production \
     DATA_DIR=/data
 
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/public ./public
-COPY --from=build /app/server ./server
-COPY --from=build /app/shared ./shared
-# The schema is read at startup, so it has to ship with the image. Deploying a
-# newer schema without it would leave the database on the old shape.
-COPY --from=build /app/db ./db
+# The whole deployable: compiled server, built site, and the schema. Assembled by
+# scripts/stage.mjs at the end of `npm run build`. `db/` is inside it because
+# sqlite.ts reads the schema relative to the app root at startup.
+COPY --from=build /app/dist-server ./dist-server
 COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/app.js ./app.js
 
 # The database and uploaded media live here. This is the mount point for a
 # persistent volume — without one, every redeploy discards the dashboard's
@@ -155,4 +160,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "server/index.ts"]
+CMD ["node", "dist-server/server/index.js"]

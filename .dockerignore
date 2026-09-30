@@ -12,7 +12,12 @@
 
 node_modules
 dist
+# Produced by the build inside the image. A stale local copy would only bloat the
+# context; the image builds its own.
+dist-server
 data
+# `npm run backup` output. Real content and documents — never in an image.
+backups
 .git
 .gitignore
 
